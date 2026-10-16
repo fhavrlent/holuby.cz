@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>holuby.cz — Holubí náměstí</title>
-<meta name="description" content="Virtuální náměstí plné holubů. Nasyp drobky, dívej se, jak se slétají, a sleduj drobky ostatních návštěvníků v reálném čase.">
+<meta name="description" content="Virtuální náměstí plné holubů. Nasyp slunečnicová semínka, dívej se, jak se holubi slétají, a sleduj, jak sypou i ostatní návštěvníci v reálném čase.">
 <meta property="og:title" content="Holubí náměstí">
-<meta property="og:description" content="Nasyp drobky. Holubi přiletí. Ostatní návštěvníci sypou s tebou.">
+<meta property="og:description" content="Nasyp semínka. Holubi přiletí. Ostatní návštěvníci sypou s tebou.">
 <meta property="og:url" content="https://holuby.cz/">
 <meta name="theme-color" content="#2f2c28">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -63,19 +63,19 @@
 </style>
 </head>
 <body>
-<canvas id="c" role="img" aria-label="Dlážděné náměstí s holuby. Kliknutím nasypeš drobky, rychlým máchnutím holuby vyplašíš."></canvas>
+<canvas id="c" role="img" aria-label="Dlážděné náměstí s holuby. Kliknutím nasypeš semínka, rychlým máchnutím holuby vyplašíš."></canvas>
 
 <div class="brand">
   <h1>holuby.cz</h1>
-  <p>Náměstí, drobky a holubi.</p>
+  <p>Náměstí, semínka a holubi.</p>
 </div>
 
-<div class="hint" id="hint">Klikni a nasyp drobky. Rychlým máchnutím myši holuby vyplašíš.</div>
+<div class="hint" id="hint">Klikni a nasyp semínka. Rychlým máchnutím myši holuby vyplašíš.</div>
 
 <div class="bar">
   <div class="stats">
     <span class="pill" id="online"><span class="dot" id="dot"></span>Připojuji…</span>
-    <span class="pill" id="total" title="Kolik drobků všichni návštěvníci dohromady rozsypali">Drobků celkem: —</span>
+    <span class="pill" id="total" title="Kolik hrstí semínek všichni návštěvníci dohromady nasypali">Hrstí semínek: —</span>
   </div>
   <div class="actions">
     <button id="feed" type="button">Nasypat</button>
@@ -88,7 +88,7 @@
 <dialog id="about">
   <div class="sheet">
     <h2>Holubí náměstí</h2>
-    <p class="sub">Jedno sdílené náměstí pro všechny, kdo sem zrovna zavítali. Když někdo jinde nasype drobky, uvidíš je přiletět i u sebe.</p>
+    <p class="sub">Jedno sdílené náměstí pro všechny, kdo sem zrovna zavítali. Když někdo jinde nasype semínka, uvidíš je přiletět i u sebe.</p>
     <ol>
       <li>Městští holubi pocházejí z holuba skalního (<i>Columba livia</i>). Lidé je ochočili už před více než 5&nbsp;000 lety.</li>
       <li>Poštovní holub najde cestu domů i ze vzdálenosti stovek kilometrů. Orientuje se podle slunce, magnetického pole Země a nejspíš i podle pachů a zvuků krajiny.</li>
@@ -97,7 +97,7 @@
       <li>Mláďata krmí oba rodiče takzvaným holubím mlékem, výživnou kaší, která se tvoří ve voleti.</li>
       <li>Holub Cher Ami za první světové války doručil zprávu, díky níž se podařilo zachránit téměř 200 obklíčených amerických vojáků.</li>
     </ol>
-    <p class="note">Skutečné holuby na náměstí raději nekrmte. Pečivo jim neprospívá a v řadě měst je krmení zakázané. Tyhle drobky jsou naštěstí jen z pixelů.</p>
+    <p class="note">Holubům na skutečném náměstí můžete udělat radost taky. Slunečnicová semínka jim chutnají a dělají jim dobře. Jen nasypte tolik, kolik sezobou, a co zbyde, po sobě ukliďte. Tady to za vás holubi zvládnou sami, do posledního semínka.</p>
     <footer>
       <span>Zdrojový kód na <a href="https://github.com/fhavrlent/holuby.cz" rel="noopener">GitHubu</a>.</span>
       <button id="close" type="button">Zavřít</button>
@@ -228,7 +228,7 @@
     cvs.width = W * DPR; cvs.height = H * DPR;
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     paintGround();
-    if (oldW && oldH) {
+    if (oldW && oldH && W && H) {
       for (const p of pigeons) { p.x *= W / oldW; p.y *= H / oldH; }
       for (const c of crumbs) { c.tx *= W / oldW; c.ty *= H / oldH; }
     }
@@ -380,7 +380,7 @@
       let best = null, bd = 420 * U;
       for (const c of crumbs) {
         if (!c.landed || c.bites <= 0) continue;
-        const d = Math.hypot(c.tx - this.x, c.ty - this.y) * (c.claims + 1);
+        const d = Math.hypot(c.tx - this.x, c.ty - this.y) * (c.claims * 0.6 + 1);
         if (d < bd) { bd = d; best = c; }
       }
       return best;
@@ -689,11 +689,22 @@
   }
 
   // ---------------------------------------------------------------- crumbs
-  const CRUMB_COLORS = ["#dcbb7d", "#c99a55", "#e9d6a4", "#b9874a"];
+  // Sunflower seeds: mostly striped black shells, a few hulled kernels.
+  const SEED_KINDS = [
+    { w: 7, shell: "#2e2d30", stripe: "#d8d4c8" },
+    { w: 2, shell: "#45443f", stripe: "#bdb7a6" },
+    { w: 3, shell: "#d9d1b8", stripe: null },
+  ];
+  const SEED_TOTAL = SEED_KINDS.reduce((s, k) => s + k.w, 0);
+  function randomSeed() {
+    let r = Math.random() * SEED_TOTAL;
+    for (const k of SEED_KINDS) { if ((r -= k.w) <= 0) return k; }
+    return SEED_KINDS[0];
+  }
 
   /** Throw a handful of crumbs at (x, y). Local throws come from below; remote ones from a random edge. */
   function scatter(x, y, remote) {
-    const n = (rand(5, 8)) | 0;
+    const n = (rand(8, 13)) | 0;
     let ox, oy;
     if (remote) {
       const side = Math.random() < 0.5;
@@ -710,8 +721,8 @@
         tx: clamp(x + Math.cos(a) * r, 4, W - 4),
         ty: clamp(y + Math.sin(a) * r * 0.6, groundTop(), H - 4),
         t: -rand(0, 0.12), dur: rand(0.5, 0.7),
-        landed: false, bites: (rand(1, 3.5)) | 0, claims: 0,
-        size: rand(1.6, 3.4), color: pick(CRUMB_COLORS), rot: rand(0, 6), age: 0,
+        landed: false, bites: 1, claims: 0,
+        size: rand(2.6, 3.4), kind: randomSeed(), rot: rand(0, 6), age: 0,
       });
     }
     sinceFed = 0;
@@ -743,19 +754,30 @@
   function drawCrumb(c, cr) {
     if (cr.t < 0) return;
     const p = crumbPos(cr);
-    const s = persp(p.y) * U * cr.size * (cr.bites >= 2 ? 1 : 0.75);
+    const s = persp(p.y) * U * cr.size;
     if (p.z < 5) {
-      c.fillStyle = "rgba(0,0,0,.25)";
-      c.beginPath(); c.ellipse(p.x, p.y + s * 0.5, s * 1.2, s * 0.45, 0, 0, Math.PI * 2); c.fill();
+      c.fillStyle = "rgba(0,0,0,.28)";
+      c.beginPath(); c.ellipse(p.x, p.y + s * 0.35, s * 1.25, s * 0.4, 0, 0, Math.PI * 2); c.fill();
     }
     c.save();
     c.translate(p.x, p.y - p.z);
     c.rotate(cr.rot + (cr.landed ? 0 : p.t * 8));
-    c.fillStyle = cr.color;
+    // teardrop: blunt end at -x, pointed tip at +x
+    c.fillStyle = cr.kind.shell;
     c.beginPath();
-    c.moveTo(-s, -s * 0.4); c.lineTo(-s * 0.2, -s * 0.9); c.lineTo(s, -s * 0.3);
-    c.lineTo(s * 0.7, s * 0.7); c.lineTo(-s * 0.6, s * 0.6);
-    c.closePath(); c.fill();
+    c.moveTo(s * 1.3, 0);
+    c.quadraticCurveTo(s * 0.4, -s * 0.62, -s * 0.9, -s * 0.48);
+    c.quadraticCurveTo(-s * 1.25, 0, -s * 0.9, s * 0.48);
+    c.quadraticCurveTo(s * 0.4, s * 0.62, s * 1.3, 0);
+    c.fill();
+    if (cr.kind.stripe) {
+      c.strokeStyle = cr.kind.stripe;
+      c.lineWidth = Math.max(0.6, s * 0.14);
+      c.beginPath();
+      c.moveTo(-s * 0.85, -s * 0.18); c.quadraticCurveTo(s * 0.2, -s * 0.28, s * 1.05, -s * 0.03);
+      c.moveTo(-s * 0.85, s * 0.18); c.quadraticCurveTo(s * 0.2, s * 0.28, s * 1.05, s * 0.03);
+      c.stroke();
+    }
     c.restore();
   }
 
@@ -809,9 +831,16 @@
 
   // ---------------------------------------------------------------- loop
   let last = performance.now();
+  let seeded = false;
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    // A page opened hidden or prerendered can have a 0×0 viewport; wait until it has a size.
+    if (!W || !H || !bg.width || !bg.height) { requestAnimationFrame(frame); return; }
+    if (!seeded) {
+      seeded = true;
+      for (let i = 0; i < basePop(); i++) pigeons.push(new Pigeon(false));
+    }
 
     updateCrumbs(dt);
     for (const p of pigeons) p.update(dt);
@@ -861,7 +890,7 @@
 
   // ---------------------------------------------------------------- input
   const hint = document.getElementById("hint");
-  if (coarse) hint.textContent = "Ťukni a nasyp drobky. Rychlým přejetím prstem holuby vyplašíš.";
+  if (coarse) hint.textContent = "Ťukni a nasyp semínka. Rychlým přejetím prstem holuby vyplašíš.";
   let hintShown = true;
   function dismissHint() {
     if (!hintShown) return;
@@ -942,7 +971,7 @@
 
   function setTotal(n) {
     total = Math.max(total, n);
-    totalEl.textContent = `Drobků celkem: ${fmt.format(total)}`;
+    totalEl.textContent = `Hrstí semínek: ${fmt.format(total)}`;
   }
 
   function setOnline(n) {
@@ -989,7 +1018,6 @@
   // ---------------------------------------------------------------- start
   resize();
   window.addEventListener("resize", resize);
-  for (let i = 0; i < basePop(); i++) pigeons.push(new Pigeon(false));
   connect();
   requestAnimationFrame(frame);
   window.holuby = { pigeons, crumbs };

@@ -1,8 +1,8 @@
 # holuby.cz — Holubí náměstí
 
-A shared virtual town square full of pigeons. Click to scatter breadcrumbs, swipe fast to scare the flock.
-Everyone on the page is on the same square: crumbs thrown by other visitors arrive in real time
-(marked with an orange ring), and an all-time crumb counter is kept server-side.
+A shared virtual town square full of pigeons. Click to scatter sunflower seeds, swipe fast to scare the flock.
+Everyone on the page is on the same square: seeds thrown by other visitors arrive in real time
+(marked with an orange ring), and an all-time handful counter is kept server-side.
 
 ## How it works
 
