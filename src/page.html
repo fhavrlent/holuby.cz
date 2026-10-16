@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>holuby.cz — Holubí náměstí</title>
+<meta name="description" content="Virtuální náměstí plné holubů. Nasyp drobky, dívej se, jak se slétají, a sleduj drobky ostatních návštěvníků v reálném čase.">
+<meta property="og:title" content="Holubí náměstí">
+<meta property="og:description" content="Nasyp drobky. Holubi přiletí. Ostatní návštěvníci sypou s tebou.">
+<meta property="og:url" content="https://holuby.cz/">
+<meta name="theme-color" content="#2f2c28">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --ink: #f5efe4;
+    --ink-dim: rgba(245, 239, 228, 0.72);
+    --panel: rgba(28, 25, 22, 0.72);
+    --panel-solid: #24211d;
+    --line: rgba(245, 239, 228, 0.16);
+    --accent: #e8a54b;
+    --live: #7fd18b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #2f2c28; color: var(--ink); overflow: hidden;
+    font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
+  .brand { position: fixed; top: max(16px, env(safe-area-inset-top)); left: 16px; pointer-events: none;
+    text-shadow: 0 1px 12px rgba(0,0,0,.55); }
+  .brand h1 { margin: 0; font: 600 clamp(26px, 4.5vw, 40px)/1 Georgia, "Times New Roman", serif; letter-spacing: -0.01em; }
+  .brand p { margin: 6px 0 0; color: var(--ink-dim); font-size: 14px; }
+  .hint { position: fixed; left: 50%; top: 46%; transform: translate(-50%, -50%); padding: 10px 16px;
+    border-radius: 999px; background: var(--panel); backdrop-filter: blur(6px); pointer-events: none;
+    font-size: 15px; white-space: nowrap; transition: opacity .8s ease; }
+  .hint.gone { opacity: 0; }
+  .bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    justify-content: space-between; padding: 10px 16px max(12px, env(safe-area-inset-bottom)); pointer-events: none; }
+  .stats, .actions { display: flex; flex-wrap: wrap; gap: 8px; pointer-events: auto; }
+  .pill { padding: 7px 12px; border-radius: 999px; background: var(--panel); backdrop-filter: blur(6px);
+    border: 1px solid var(--line); font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #888; margin-right: 7px; vertical-align: 1px; }
+  .dot.on { background: var(--live); box-shadow: 0 0 0 0 rgba(127,209,139,.6); animation: pulse 2s infinite; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 7px rgba(127,209,139,0); } 100% { box-shadow: 0 0 0 0 rgba(127,209,139,0); } }
+  button { font: inherit; font-size: 13.5px; color: var(--ink); background: var(--panel); backdrop-filter: blur(6px);
+    border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; cursor: pointer; }
+  button:hover { border-color: rgba(245,239,228,.4); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  dialog { max-width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0; border: 1px solid var(--line);
+    border-radius: 16px; background: var(--panel-solid); color: var(--ink); box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .sheet { padding: 22px 24px 20px; overflow: auto; }
+  .sheet h2 { margin: 0 0 4px; font: 600 24px/1.2 Georgia, serif; }
+  .sheet .sub { margin: 0 0 16px; color: var(--ink-dim); }
+  .sheet ol { margin: 0; padding-left: 20px; }
+  .sheet li { margin: 0 0 10px; }
+  .sheet li::marker { color: var(--accent); font-weight: 600; }
+  .note { margin: 16px 0 0; padding: 12px 14px; border-radius: 10px; background: rgba(232,165,75,.12); border: 1px solid rgba(232,165,75,.3); font-size: 14px; }
+  .sheet footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 18px; font-size: 13px; color: var(--ink-dim); }
+  .sheet a { color: var(--accent); }
+  @media (max-width: 520px) {
+    .hint { white-space: normal; text-align: center; width: calc(100vw - 48px); border-radius: 14px; }
+    .bar { justify-content: center; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Dlážděné náměstí s holuby. Kliknutím nasypeš drobky, rychlým máchnutím holuby vyplašíš."></canvas>
+
+<div class="brand">
+  <h1>holuby.cz</h1>
+  <p>Náměstí, drobky a holubi.</p>
+</div>
+
+<div class="hint" id="hint">Klikni a nasyp drobky. Rychlým máchnutím myši holuby vyplašíš.</div>
+
+<div class="bar">
+  <div class="stats">
+    <span class="pill" id="online"><span class="dot" id="dot"></span>Připojuji…</span>
+    <span class="pill" id="total" title="Kolik drobků všichni návštěvníci dohromady rozsypali">Drobků celkem: —</span>
+  </div>
+  <div class="actions">
+    <button id="feed" type="button">Nasypat</button>
+    <button id="clap" type="button">Tlesknout</button>
+    <button id="sound" type="button" aria-pressed="false">Zvuk: vyp.</button>
+    <button id="info" type="button">O holubech</button>
+  </div>
+</div>
+
+<dialog id="about">
+  <div class="sheet">
+    <h2>Holubí náměstí</h2>
+    <p class="sub">Jedno sdílené náměstí pro všechny, kdo sem zrovna zavítali. Když někdo jinde nasype drobky, uvidíš je přiletět i u sebe.</p>
+    <ol>
+      <li>Městští holubi pocházejí z holuba skalního (<i>Columba livia</i>). Lidé je ochočili už před více než 5&nbsp;000 lety.</li>
+      <li>Poštovní holub najde cestu domů i ze vzdálenosti stovek kilometrů. Orientuje se podle slunce, magnetického pole Země a nejspíš i podle pachů a zvuků krajiny.</li>
+      <li>Kývání hlavou je optický trik: hlava na okamžik zůstane ve vzduchu na místě, aby holub viděl ostře, a teprve pak ji dorovná tělo.</li>
+      <li>Na rozdíl od většiny ptáků holubi pijí nasáváním, takže nemusí po každém doušku zaklánět hlavu.</li>
+      <li>Mláďata krmí oba rodiče takzvaným holubím mlékem, výživnou kaší, která se tvoří ve voleti.</li>
+      <li>Holub Cher Ami za první světové války doručil zprávu, díky níž se podařilo zachránit téměř 200 obklíčených amerických vojáků.</li>
+    </ol>
+    <p class="note">Skutečné holuby na náměstí raději nekrmte. Pečivo jim neprospívá a v řadě měst je krmení zakázané. Tyhle drobky jsou naštěstí jen z pixelů.</p>
+    <footer>
+      <span>Zdrojový kód na <a href="https://github.com/fhavrlent/holuby.cz" rel="noopener">GitHubu</a>.</span>
+      <button id="close" type="button">Zavřít</button>
+    </footer>
+  </div>
+</dialog>
+
+<script>
+(() => {
+  "use strict";
+
+  const cvs = document.getElementById("c");
+  const ctx = cvs.getContext("2d");
+  const bg = document.createElement("canvas");
+  const bgx = bg.getContext("2d");
+  let W = 0, H = 0, DPR = 1, U = 1;
+
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+  /** Things further up the screen are further away and drawn smaller. */
+  const persp = (y) => 0.6 + 0.6 * clamp(y / H, 0, 1.1);
+  const groundTop = () => H * 0.12;
+  /** Size of a pigeon (and its stride) at a given depth. */
+  const pscale = (y) => persp(y) * U * 1.5;
+  const coarse = matchMedia("(pointer: coarse)").matches;
+
+  // ---------------------------------------------------------------- ground
+  const hour = new Date().getHours();
+  const night = hour >= 19 || hour < 6;
+
+  function paintGround() {
+    bg.width = W * DPR; bg.height = H * DPR;
+    bgx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    bgx.fillStyle = "#3a3631";
+    bgx.fillRect(0, 0, W, H);
+
+    let y = -4;
+    let row = 0;
+    while (y < H + 10) {
+      const s = persp(y);
+      const h = 26 * U * s;
+      let x = row % 2 ? -h * 0.8 : -h * 0.1;
+      while (x < W + 10) {
+        const w = h * rand(1.15, 1.9);
+        const l = rand(33, 45);
+        const hue = rand(24, 38);
+        const sat = rand(4, 10);
+        const g = 1.2 * s;
+        roundRect(bgx, x + g, y + g, w - 2 * g, h - 2 * g, h * 0.32);
+        bgx.fillStyle = `hsl(${hue} ${sat}% ${l}%)`;
+        bgx.fill();
+        bgx.fillStyle = `hsla(${hue} 20% 85% / ${rand(0.03, 0.07)})`;
+        roundRect(bgx, x + g * 2, y + g * 1.5, w - 4 * g, (h - 2 * g) * 0.35, h * 0.25);
+        bgx.fill();
+        x += w;
+      }
+      y += h;
+      row++;
+    }
+
+    // Autumn leaves — it's October somewhere.
+    const leafColors = ["#c8642b", "#d98b2b", "#a8432a", "#e0b23c", "#8c5a2b"];
+    const nLeaves = Math.round((W * H) / 26000);
+    for (let i = 0; i < nLeaves; i++) {
+      const lx = rand(0, W), ly = rand(groundTop(), H);
+      const s = persp(ly) * U * rand(0.8, 1.3);
+      bgx.save();
+      bgx.translate(lx, ly);
+      bgx.rotate(rand(0, Math.PI * 2));
+      bgx.scale(s, s * 0.7);
+      bgx.globalAlpha = rand(0.75, 0.95);
+      bgx.fillStyle = pick(leafColors);
+      bgx.beginPath();
+      bgx.moveTo(-9, 0);
+      bgx.quadraticCurveTo(0, -7, 9, 0);
+      bgx.quadraticCurveTo(0, 7, -9, 0);
+      bgx.fill();
+      bgx.strokeStyle = "rgba(60,30,10,.45)";
+      bgx.lineWidth = 0.8;
+      bgx.beginPath(); bgx.moveTo(-9, 0); bgx.lineTo(11, 0); bgx.stroke();
+      bgx.restore();
+    }
+
+    // Light falloff towards the edges.
+    const vg = bgx.createRadialGradient(W / 2, H * 0.55, Math.min(W, H) * 0.25, W / 2, H * 0.55, Math.max(W, H) * 0.8);
+    vg.addColorStop(0, "rgba(0,0,0,0)");
+    vg.addColorStop(1, "rgba(0,0,0,.5)");
+    bgx.fillStyle = vg;
+    bgx.fillRect(0, 0, W, H);
+    const top = bgx.createLinearGradient(0, 0, 0, H * 0.3);
+    top.addColorStop(0, "rgba(20,18,16,.55)");
+    top.addColorStop(1, "rgba(20,18,16,0)");
+    bgx.fillStyle = top;
+    bgx.fillRect(0, 0, W, H * 0.3);
+
+    if (night) {
+      bgx.fillStyle = "rgba(18,26,60,.38)";
+      bgx.fillRect(0, 0, W, H);
+      const lx = W * 0.78, ly = H * 0.42;
+      const glow = bgx.createRadialGradient(lx, ly, 0, lx, ly, Math.max(W, H) * 0.45);
+      glow.addColorStop(0, "rgba(255,196,110,.30)");
+      glow.addColorStop(1, "rgba(255,196,110,0)");
+      bgx.globalCompositeOperation = "lighter";
+      bgx.fillStyle = glow;
+      bgx.fillRect(0, 0, W, H);
+      bgx.globalCompositeOperation = "source-over";
+    }
+  }
+
+  function roundRect(c, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  function resize() {
+    const oldW = W, oldH = H;
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    U = clamp(Math.min(W, H) / 720, 0.7, 1.35);
+    cvs.width = W * DPR; cvs.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    paintGround();
+    if (oldW && oldH) {
+      for (const p of pigeons) { p.x *= W / oldW; p.y *= H / oldH; }
+      for (const c of crumbs) { c.tx *= W / oldW; c.ty *= H / oldH; }
+    }
+  }
+
+  // ---------------------------------------------------------------- sound
+  const sound = { ctx: null, on: false };
+
+  function audio() {
+    if (!sound.on) return null;
+    if (!sound.ctx) sound.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    return sound.ctx;
+  }
+
+  function panner(a, x) {
+    const p = a.createStereoPanner ? a.createStereoPanner() : a.createGain();
+    if (p.pan) p.pan.value = clamp((x / W) * 2 - 1, -0.9, 0.9);
+    p.connect(a.destination);
+    return p;
+  }
+
+  /** A low rolling "vrrkůů": a sine with fast tremolo and a falling pitch. */
+  function playCoo(x) {
+    const a = audio(); if (!a) return;
+    const t = a.currentTime;
+    const out = panner(a, x);
+    const g = a.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.07, t + 0.08);
+    g.gain.linearRampToValueAtTime(0.05, t + 0.45);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+    g.connect(out);
+    const o = a.createOscillator();
+    const base = rand(260, 330);
+    o.frequency.setValueAtTime(base * 1.12, t);
+    o.frequency.linearRampToValueAtTime(base, t + 0.3);
+    o.frequency.linearRampToValueAtTime(base * 0.86, t + 0.9);
+    const trem = a.createOscillator();
+    const tremGain = a.createGain();
+    trem.frequency.value = rand(22, 30);
+    tremGain.gain.value = 0.5;
+    const am = a.createGain();
+    am.gain.value = 0.5;
+    trem.connect(tremGain).connect(am.gain);
+    o.connect(am).connect(g);
+    o.start(t); trem.start(t);
+    o.stop(t + 1); trem.stop(t + 1);
+  }
+
+  let noiseBuf = null;
+  function playFlap(x) {
+    const a = audio(); if (!a) return;
+    if (!noiseBuf) {
+      noiseBuf = a.createBuffer(1, a.sampleRate * 0.5, a.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const t = a.currentTime;
+    const out = panner(a, x);
+    for (let i = 0; i < 4; i++) {
+      const s = a.createBufferSource();
+      s.buffer = noiseBuf;
+      const f = a.createBiquadFilter();
+      f.type = "bandpass"; f.frequency.value = rand(500, 900); f.Q.value = 0.8;
+      const g = a.createGain();
+      const t0 = t + i * 0.085;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(0.09 * (1 - i * 0.18), t0 + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.07);
+      s.connect(f).connect(g).connect(out);
+      s.start(t0, rand(0, 0.4), 0.08);
+    }
+  }
+
+  // ---------------------------------------------------------------- pigeons
+  const VARIANTS = [
+    { w: 45, body: ["#b0b7c0", "#848b95"], wing: "#a7aeb7", bar: "#2c2f36", head: "#6b7380", neck: ["#4f9a7a", "#8a5fa3"], tail: "#7d848e", tip: "#2a2d33" },
+    { w: 20, body: ["#8f97a1", "#686f79"], wing: "#737a84", bar: "#2a2c31", head: "#555c66", neck: ["#3f8a6c", "#7a5193"], tail: "#646b74", tip: "#24262a", check: true },
+    { w: 15, body: ["#5a5f67", "#3f434a"], wing: "#585e66", bar: "#1f2125", head: "#3e434a", neck: ["#3d7d68", "#6a4b80"], tail: "#43474e", tip: "#1c1d20" },
+    { w: 10, body: ["#b88d73", "#8d6550"], wing: "#b48a72", bar: "#6a3d2b", head: "#8e6450", neck: ["#9a8a3a", "#a05a6a"], tail: "#8f6a55", tip: "#5a3a2a" },
+    { w: 10, body: ["#f4f3ef", "#cfccc5"], wing: "#f3f2ee", bar: "#d2cec5", head: "#e6e4df", neck: ["#e3ebe4", "#e7deea"], tail: "#dedbd3", tip: "#c9c5bc" },
+  ];
+  const VARIANT_TOTAL = VARIANTS.reduce((s, v) => s + v.w, 0);
+  function randomVariant() {
+    let r = Math.random() * VARIANT_TOTAL;
+    for (const v of VARIANTS) { if ((r -= v.w) <= 0) return v; }
+    return VARIANTS[0];
+  }
+
+  const pigeons = [];
+  const crumbs = [];
+  const feathers = [];
+  const bubbles = [];
+  const rings = [];
+
+  class Pigeon {
+    constructor(arriving) {
+      this.v = randomVariant();
+      this.size = rand(0.9, 1.12);
+      this.facing = Math.random() < 0.5 ? -1 : 1;
+      this.walk = Math.random();
+      this.flap = Math.random() * 6;
+      this.head = 0;        // 0..1 head-bob position
+      this.peck = 0;        // 0..1 how far the head is down
+      this.puff = 0;        // 0..1 cooing neck puff
+      this.timer = rand(0.5, 2);
+      this.target = null;   // a crumb
+      this.goal = null;     // a point to walk to
+      this.leaving = false;
+      if (arriving) this.arrive();
+      else {
+        this.x = rand(W * 0.08, W * 0.92);
+        this.y = rand(groundTop() + 40, H * 0.9);
+        this.z = 0;
+        this.state = "idle";
+      }
+    }
+
+    arrive() {
+      const fromLeft = Math.random() < 0.5;
+      this.lx = rand(W * 0.1, W * 0.9);
+      this.ly = rand(groundTop() + 40, H * 0.88);
+      this.x = fromLeft ? -60 : W + 60;
+      this.y = this.ly + rand(-60, 60);
+      this.z = rand(H * 0.5, H * 0.8);
+      this.facing = fromLeft ? 1 : -1;
+      this.state = "land";
+      const dist = Math.hypot(this.lx - this.x, this.ly - this.y);
+      this.flightT = 0;
+      this.flightDur = clamp(dist / (260 * U), 1.4, 3.5);
+      this.sx = this.x; this.sy = this.y; this.sz = this.z;
+    }
+
+    scare(fromX, fromY, delay = 0) {
+      if (this.state === "flee" || this.state === "away") return;
+      if (this.state === "land" && this.flightT / this.flightDur < 0.7) return;
+      this.state = "spook";
+      this.timer = delay + rand(0, 0.12);
+      const dx = this.x - fromX, dy = this.y - fromY;
+      const d = Math.hypot(dx, dy) || 1;
+      this.vx = (dx / d) * rand(160, 260) * U;
+      this.vy = (dy / d) * rand(40, 100) * U - 30 * U;
+      if (Math.abs(this.vx) < 50 * U) this.vx = (Math.random() < 0.5 ? -1 : 1) * rand(90, 160) * U;
+      this.vz = rand(240, 320) * U;
+      this.target = null;
+    }
+
+    nearestCrumb() {
+      let best = null, bd = 420 * U;
+      for (const c of crumbs) {
+        if (!c.landed || c.bites <= 0) continue;
+        const d = Math.hypot(c.tx - this.x, c.ty - this.y) * (c.claims + 1);
+        if (d < bd) { bd = d; best = c; }
+      }
+      return best;
+    }
+
+    update(dt) {
+      const s = pscale(this.y);
+      this.puff = Math.max(0, this.puff - dt * 0.9);
+
+      switch (this.state) {
+        case "land": {
+          this.flightT += dt;
+          const t = clamp(this.flightT / this.flightDur, 0, 1);
+          const e = 1 - Math.pow(1 - t, 2);
+          this.x = lerp(this.sx, this.lx, e);
+          this.y = lerp(this.sy, this.ly, e);
+          this.z = this.sz * Math.pow(1 - t, 1.6);
+          this.flap += dt * (t > 0.8 ? 26 : 16);
+          if (t >= 1) { this.z = 0; this.state = "idle"; this.timer = rand(0.3, 1); }
+          return;
+        }
+        case "spook":
+          this.timer -= dt;
+          if (this.timer <= 0) {
+            this.state = "flee";
+            this.facing = this.vx >= 0 ? 1 : -1;
+            playFlap(this.x);
+            if (Math.random() < 0.45) feathers.push(new Feather(this.x, this.y, 18 * s));
+          }
+          return;
+        case "flee":
+          this.x += this.vx * dt;
+          this.y += this.vy * dt;
+          this.z += this.vz * dt;
+          this.vz += 60 * U * dt;
+          this.flap += dt * 24;
+          if (this.y - this.z < -80 || this.x < -80 || this.x > W + 80) {
+            this.state = "away";
+            this.timer = rand(3, 9);
+          }
+          return;
+        case "away":
+          this.timer -= dt;
+          if (this.timer <= 0) {
+            if (this.leaving) this.dead = true;
+            else this.arrive();
+          }
+          return;
+      }
+
+      // --- on the ground
+      if (this.target && (this.target.bites <= 0 || !this.target.landed)) this.dropTarget();
+      if (!this.target && this.state !== "peck" && Math.random() < dt * 2.5) {
+        const c = this.nearestCrumb();
+        if (c) { this.target = c; c.claims++; this.goal = null; this.state = "walk"; }
+      }
+
+      if (this.state === "peck") {
+        this.timer -= dt;
+        const t = 1 - clamp(this.timer / this.peckDur, 0, 1);
+        this.peck = Math.sin(t * Math.PI);
+        if (this.timer <= 0) {
+          this.peck = 0;
+          if (this.target && this.target.bites > 0) {
+            this.target.bites--;
+            if (this.target.bites <= 0) this.dropTarget();
+            if (this.target) { this.startPeck(); return; }
+          }
+          this.state = "idle";
+          this.timer = rand(0.2, 1.2);
+        }
+        return;
+      }
+
+      let tx = null, ty = null, speed = 34;
+      if (this.target) { tx = this.target.tx; ty = this.target.ty; speed = 95; }
+      else if (this.goal) { tx = this.goal.x; ty = this.goal.y; }
+
+      if (tx !== null) {
+        // Turn around only when the target is clearly behind the body, and not more often
+        // than every few hundred ms — otherwise a crumb right under the beak makes it flip every frame.
+        this.turnCooldown = Math.max(0, (this.turnCooldown || 0) - dt);
+        const bodyDx = tx - this.x;
+        if (bodyDx * this.facing < -10 * s && this.turnCooldown <= 0) {
+          this.facing = -this.facing;
+          this.turnCooldown = rand(0.35, 0.6);
+        }
+        const dx = tx - (this.x + this.facing * 12 * s), dy = ty - this.y;
+        const d = Math.hypot(dx, dy);
+        if (d < 5 * s) {
+          if (this.target) this.startPeck();
+          else { this.goal = null; this.state = "idle"; this.timer = rand(0.5, 2.5); }
+        } else {
+          this.state = "walk";
+          const behind = bodyDx * this.facing < -10 * s;
+          const v = behind ? 0 : Math.min(d, speed * s * dt);
+          this.x += (dx / d) * v;
+          this.y += (dy / d) * v;
+          this.walk += v / (11 * s);
+        }
+      } else {
+        this.timer -= dt;
+        if (this.timer <= 0) this.decide(s);
+      }
+
+      // Head bob: thrust forward quickly, then hold still while the body catches up.
+      const ph = this.walk % 1;
+      const targetHead = this.state === "walk" ? (ph < 0.3 ? ph / 0.3 : 1 - (ph - 0.3) / 0.7) : 0.4;
+      this.head = lerp(this.head, targetHead, clamp(dt * 30, 0, 1));
+    }
+
+    decide(s) {
+      const r = Math.random();
+      if (r < 0.5) {
+        const a = rand(0, Math.PI * 2), d = rand(30, 140) * s;
+        this.goal = {
+          x: clamp(this.x + Math.cos(a) * d, W * 0.04, W * 0.96),
+          y: clamp(this.y + Math.sin(a) * d * 0.6, groundTop() + 20, H - 16),
+        };
+        this.state = "walk";
+      } else if (r < 0.75) {
+        this.state = "idle";
+        this.timer = rand(0.8, 3);
+        if (Math.random() < 0.3) this.facing *= -1;
+      } else if (r < 0.92) {
+        this.startPeck();
+      } else {
+        this.puff = 1;
+        this.state = "idle";
+        this.timer = rand(1.2, 2.4);
+        bubbles.push({ x: this.x + this.facing * 14 * s, y: this.y - 40 * s, t: 0, text: pick(["vrků", "vrrků", "hrrů", "vrkú"]) });
+        if (Math.random() < 0.6) playCoo(this.x);
+      }
+    }
+
+    startPeck() {
+      this.state = "peck";
+      this.peckDur = rand(0.28, 0.42);
+      this.timer = this.peckDur;
+    }
+
+    dropTarget() {
+      if (this.target) this.target.claims = Math.max(0, this.target.claims - 1);
+      this.target = null;
+    }
+
+    draw(c) {
+      const s = pscale(this.y) * this.size;
+      const flying = this.state === "land" || this.state === "flee" || this.state === "away";
+      if (this.state === "away") return;
+      const v = this.v;
+
+      // shadow on the ground
+      const sa = 0.24 * (1 - clamp(this.z / (H * 0.5), 0, 0.85));
+      c.fillStyle = `rgba(0,0,0,${sa})`;
+      c.beginPath();
+      c.ellipse(this.x, this.y, 15 * s, 4.2 * s, 0, 0, Math.PI * 2);
+      c.fill();
+
+      c.save();
+      c.translate(this.x, this.y - this.z);
+      c.scale(s * this.facing, s);
+      if (flying) c.rotate(this.state === "flee" ? -0.22 : 0.08);
+
+      const lift = Math.sin(this.flap);
+      if (flying) this.drawWing(c, lift * 0.85 + 0.15, v.tip, -3);
+
+      if (!flying) {
+        const ph = (this.walk % 1) * Math.PI * 2;
+        const step = this.state === "walk" ? Math.sin(ph) * 3.2 : 0;
+        c.strokeStyle = "#cf6b6b";
+        c.lineWidth = 2;
+        c.lineCap = "round";
+        c.beginPath();
+        c.moveTo(-2, -7); c.lineTo(-2 + step, 0); c.lineTo(1 + step, 0.3);
+        c.moveTo(3, -7); c.lineTo(3 - step, 0); c.lineTo(6 - step, 0.3);
+        c.stroke();
+      }
+
+      // tail
+      c.fillStyle = v.tail;
+      c.beginPath();
+      c.moveTo(-9, -15); c.lineTo(-27, -12.5); c.lineTo(-26, -7.5); c.lineTo(-8, -9.5);
+      c.closePath(); c.fill();
+      c.fillStyle = v.tip;
+      c.beginPath();
+      c.moveTo(-23, -12); c.lineTo(-27, -12.5); c.lineTo(-26, -7.5); c.lineTo(-22, -8);
+      c.closePath(); c.fill();
+
+      // body
+      const bgd = c.createLinearGradient(0, -24, 0, -5);
+      bgd.addColorStop(0, v.body[0]);
+      bgd.addColorStop(1, v.body[1]);
+      c.fillStyle = bgd;
+      c.beginPath();
+      c.ellipse(0, -14, 15, 9.5, -0.08, 0, Math.PI * 2);
+      c.fill();
+
+      if (!flying) {
+        c.fillStyle = v.wing;
+        c.beginPath();
+        c.ellipse(-4, -15.5, 11.5, 6.4, -0.14, 0, Math.PI * 2);
+        c.fill();
+        if (v.check) {
+          c.fillStyle = v.bar;
+          c.globalAlpha = 0.45;
+          for (let i = 0; i < 7; i++) {
+            c.beginPath();
+            c.ellipse(-11 + (i % 4) * 4.2, -18 + Math.floor(i / 4) * 4, 1.2, 0.9, 0, 0, Math.PI * 2);
+            c.fill();
+          }
+          c.globalAlpha = 1;
+        }
+        c.strokeStyle = v.bar;
+        c.lineWidth = 1.7;
+        c.lineCap = "round";
+        for (let i = 0; i < 2; i++) {
+          c.beginPath();
+          c.moveTo(-9 + i * 4.5, -19.5);
+          c.quadraticCurveTo(-6 + i * 4.5, -15, -8.5 + i * 4.5, -11);
+          c.stroke();
+        }
+      }
+
+      // neck + head
+      let hx = 12 + this.head * 3.5, hy = -28;
+      if (flying) { hx = 14; hy = -24; }
+      hx = lerp(hx, 18, this.peck);
+      hy = lerp(hy, -5, this.peck);
+      const ng = c.createLinearGradient(6, -20, hx, hy);
+      ng.addColorStop(0, v.neck[0]);
+      ng.addColorStop(1, v.neck[1]);
+      c.strokeStyle = ng;
+      c.lineCap = "round";
+      c.lineWidth = 9 + this.puff * 4;
+      c.beginPath();
+      c.moveTo(7, -17);
+      c.lineTo(hx - 1.5, hy + 3);
+      c.stroke();
+
+      c.fillStyle = v.head;
+      c.beginPath(); c.arc(hx, hy, 5.6, 0, Math.PI * 2); c.fill();
+      c.fillStyle = "#3a3433";
+      c.beginPath();
+      c.moveTo(hx + 4.6, hy - 1.2); c.lineTo(hx + 10.5, hy + 0.9); c.lineTo(hx + 4.6, hy + 2.1);
+      c.closePath(); c.fill();
+      c.fillStyle = "#ece8df";
+      c.beginPath(); c.arc(hx + 5.3, hy - 1.1, 1.4, 0, Math.PI * 2); c.fill();
+      c.fillStyle = "#e8862a";
+      c.beginPath(); c.arc(hx + 1.6, hy - 1.3, 1.7, 0, Math.PI * 2); c.fill();
+      c.fillStyle = "#111";
+      c.beginPath(); c.arc(hx + 1.9, hy - 1.3, 0.85, 0, Math.PI * 2); c.fill();
+
+      if (flying) this.drawWing(c, lift, v.wing, 0);
+      c.restore();
+    }
+
+    drawWing(c, lift, color, dx) {
+      const tipY = -17 - lift * 27;
+      c.fillStyle = color;
+      c.beginPath();
+      c.moveTo(6 + dx, -18);
+      c.quadraticCurveTo(4 + dx, -17 - lift * 16, -6 + dx, tipY);
+      c.lineTo(-13 + dx, tipY + lift * 3 + 2);
+      c.quadraticCurveTo(-9 + dx, -16 - lift * 6, -7 + dx, -14);
+      c.closePath();
+      c.fill();
+      c.fillStyle = this.v.tip;
+      c.beginPath();
+      c.moveTo(-6 + dx, tipY);
+      c.lineTo(-13 + dx, tipY + lift * 3 + 2);
+      c.lineTo(-9 + dx, tipY + lift * 9 + 3);
+      c.closePath();
+      c.fill();
+    }
+  }
+
+  class Feather {
+    constructor(x, y, z) {
+      this.x = x + rand(-8, 8); this.y = y; this.z = z + rand(0, 10);
+      this.rot = rand(0, Math.PI); this.t = 0; this.sway = rand(0, 6);
+      this.c = pick(["#c9ced4", "#a7aeb7", "#e7e6e2"]);
+    }
+    update(dt) {
+      this.t += dt;
+      if (this.z > 0) {
+        this.z = Math.max(0, this.z - 14 * U * dt);
+        this.x += Math.sin(this.t * 2.4 + this.sway) * 18 * U * dt;
+        this.rot += Math.cos(this.t * 2.4 + this.sway) * dt;
+      }
+      return this.t < 9;
+    }
+    draw(c) {
+      const s = persp(this.y) * U;
+      c.save();
+      c.globalAlpha = clamp((9 - this.t) / 2, 0, 0.9);
+      c.translate(this.x, this.y - this.z);
+      c.rotate(this.rot);
+      c.scale(s, s);
+      c.fillStyle = this.c;
+      c.beginPath(); c.ellipse(0, 0, 5, 1.6, 0, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = "rgba(80,80,90,.5)"; c.lineWidth = 0.5;
+      c.beginPath(); c.moveTo(-6, 0); c.lineTo(5, 0); c.stroke();
+      c.restore();
+    }
+  }
+
+  // ---------------------------------------------------------------- crumbs
+  const CRUMB_COLORS = ["#dcbb7d", "#c99a55", "#e9d6a4", "#b9874a"];
+
+  /** Throw a handful of crumbs at (x, y). Local throws come from below; remote ones from a random edge. */
+  function scatter(x, y, remote) {
+    const n = (rand(5, 8)) | 0;
+    let ox, oy;
+    if (remote) {
+      const side = Math.random() < 0.5;
+      ox = side ? (Math.random() < 0.5 ? -20 : W + 20) : rand(0, W);
+      oy = side ? rand(H * 0.3, H) : H + 20;
+      rings.push({ x, y, t: 0 });
+    } else {
+      ox = lerp(W / 2, x, 0.6); oy = H + 30;
+    }
+    for (let i = 0; i < n; i++) {
+      const a = rand(0, Math.PI * 2), r = Math.sqrt(Math.random()) * 30 * U * persp(y);
+      crumbs.push({
+        ox, oy,
+        tx: clamp(x + Math.cos(a) * r, 4, W - 4),
+        ty: clamp(y + Math.sin(a) * r * 0.6, groundTop(), H - 4),
+        t: -rand(0, 0.12), dur: rand(0.5, 0.7),
+        landed: false, bites: (rand(1, 3.5)) | 0, claims: 0,
+        size: rand(1.6, 3.4), color: pick(CRUMB_COLORS), rot: rand(0, 6), age: 0,
+      });
+    }
+    sinceFed = 0;
+    fedCount++;
+  }
+
+  function updateCrumbs(dt) {
+    for (let i = crumbs.length - 1; i >= 0; i--) {
+      const c = crumbs[i];
+      if (!c.landed) {
+        c.t += dt;
+        if (c.t >= c.dur) c.landed = true;
+      } else {
+        c.age += dt;
+      }
+      if (c.age > 90) c.bites = 0;
+      if (c.bites <= 0) crumbs.splice(i, 1);
+    }
+  }
+
+  function crumbPos(c) {
+    const t = clamp(c.t / c.dur, 0, 1);
+    const x = lerp(c.ox, c.tx, t);
+    const y = lerp(c.oy, c.ty, t);
+    const arc = Math.sin(t * Math.PI) * H * 0.22;
+    return { x, y, z: c.landed ? 0 : arc, t };
+  }
+
+  function drawCrumb(c, cr) {
+    if (cr.t < 0) return;
+    const p = crumbPos(cr);
+    const s = persp(p.y) * U * cr.size * (cr.bites >= 2 ? 1 : 0.75);
+    if (p.z < 5) {
+      c.fillStyle = "rgba(0,0,0,.25)";
+      c.beginPath(); c.ellipse(p.x, p.y + s * 0.5, s * 1.2, s * 0.45, 0, 0, Math.PI * 2); c.fill();
+    }
+    c.save();
+    c.translate(p.x, p.y - p.z);
+    c.rotate(cr.rot + (cr.landed ? 0 : p.t * 8));
+    c.fillStyle = cr.color;
+    c.beginPath();
+    c.moveTo(-s, -s * 0.4); c.lineTo(-s * 0.2, -s * 0.9); c.lineTo(s, -s * 0.3);
+    c.lineTo(s * 0.7, s * 0.7); c.lineTo(-s * 0.6, s * 0.6);
+    c.closePath(); c.fill();
+    c.restore();
+  }
+
+  // ---------------------------------------------------------------- population
+  let fedCount = 0;       // handfuls thrown on this square (local + remote) this session
+  let sinceFed = 999;     // seconds since the last handful
+  let spawnTimer = 0;
+  const basePop = () => clamp(Math.round((W * H) / 70000), 5, 14);
+  let extraPop = 0;
+
+  function managePopulation(dt) {
+    spawnTimer -= dt;
+    sinceFed += dt;
+    const wanted = Math.min(38, basePop() + extraPop);
+    if (fedCount >= 3) { extraPop++; fedCount = 0; }
+    if (sinceFed > 45 && extraPop > 0 && spawnTimer <= 0) { extraPop--; spawnTimer = 15; }
+
+    const present = pigeons.filter((p) => !p.leaving);
+    if (spawnTimer <= 0 && present.length < wanted) {
+      pigeons.push(new Pigeon(true));
+      spawnTimer = rand(0.6, 2);
+    } else if (spawnTimer <= 0 && present.length > wanted) {
+      const p = present.find((p) => p.state === "idle" || p.state === "walk");
+      if (p) { p.leaving = true; p.scare(p.x - rand(-50, 50), p.y + 40); }
+      spawnTimer = rand(3, 6);
+    }
+    for (let i = pigeons.length - 1; i >= 0; i--) if (pigeons[i].dead) pigeons.splice(i, 1);
+  }
+
+  /** Keep pigeons from standing inside each other. */
+  function separate() {
+    for (let i = 0; i < pigeons.length; i++) {
+      const a = pigeons[i];
+      if (a.z > 0 || a.state === "away") continue;
+      for (let j = i + 1; j < pigeons.length; j++) {
+        const b = pigeons[j];
+        if (b.z > 0 || b.state === "away") continue;
+        const min = 22 * pscale((a.y + b.y) / 2);
+        const dx = b.x - a.x, dy = (b.y - a.y) * 1.6;
+        const d = Math.hypot(dx, dy);
+        if (d > 0 && d < min) {
+          const push = (min - d) * 0.25;
+          a.x -= (dx / d) * push; a.y -= (dy / d) * push * 0.6;
+          b.x += (dx / d) * push; b.y += (dy / d) * push * 0.6;
+        }
+      }
+      a.x = clamp(a.x, 6, W - 6);
+      a.y = clamp(a.y, groundTop(), H - 6);
+    }
+  }
+
+  // ---------------------------------------------------------------- loop
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+
+    updateCrumbs(dt);
+    for (const p of pigeons) p.update(dt);
+    separate();
+    managePopulation(dt);
+    for (let i = feathers.length - 1; i >= 0; i--) if (!feathers[i].update(dt)) feathers.splice(i, 1);
+
+    ctx.drawImage(bg, 0, 0, W, H);
+
+    for (let i = rings.length - 1; i >= 0; i--) {
+      const r = rings[i];
+      r.t += dt;
+      if (r.t > 1.4) { rings.splice(i, 1); continue; }
+      const k = r.t / 1.4;
+      ctx.strokeStyle = `rgba(232,165,75,${0.7 * (1 - k)})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(r.x, r.y, (12 + k * 46) * U, (5 + k * 18) * U, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    for (const c of crumbs) if (c.landed) drawCrumb(ctx, c);
+    for (const f of feathers) if (f.z <= 0) f.draw(ctx);
+
+    const ground = pigeons.filter((p) => p.z <= 0.5).sort((a, b) => a.y - b.y);
+    for (const p of ground) p.draw(ctx);
+    const air = pigeons.filter((p) => p.z > 0.5).sort((a, b) => a.y - b.y);
+    for (const p of air) p.draw(ctx);
+
+    for (const c of crumbs) if (!c.landed) drawCrumb(ctx, c);
+    for (const f of feathers) if (f.z > 0) f.draw(ctx);
+
+    ctx.textAlign = "center";
+    for (let i = bubbles.length - 1; i >= 0; i--) {
+      const b = bubbles[i];
+      b.t += dt;
+      if (b.t > 1.6) { bubbles.splice(i, 1); continue; }
+      ctx.globalAlpha = clamp(1.6 - b.t, 0, 1) * 0.9;
+      ctx.font = `italic ${Math.round(13 * U)}px Georgia, serif`;
+      ctx.fillStyle = "#f5efe4";
+      ctx.fillText(b.text, b.x, b.y - b.t * 18 * U);
+      ctx.globalAlpha = 1;
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---------------------------------------------------------------- input
+  const hint = document.getElementById("hint");
+  if (coarse) hint.textContent = "Ťukni a nasyp drobky. Rychlým přejetím prstem holuby vyplašíš.";
+  let hintShown = true;
+  function dismissHint() {
+    if (!hintShown) return;
+    hintShown = false;
+    hint.classList.add("gone");
+  }
+
+  let throwTimes = [];
+  function localThrow(x, y) {
+    const now = performance.now();
+    throwTimes = throwTimes.filter((t) => now - t < 1000);
+    if (throwTimes.length >= 3) return;
+    throwTimes.push(now);
+    y = clamp(y, groundTop(), H - 4);
+    scatter(x, y, false);
+    dismissHint();
+    send({ t: "c", x: x / W, y: y / H });
+    setTotal(total + 1);
+  }
+
+  let down = null;
+  let lastMove = null;
+  cvs.addEventListener("pointerdown", (e) => {
+    down = { x: e.clientX, y: e.clientY, moved: 0 };
+    lastMove = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+  });
+  cvs.addEventListener("pointermove", (e) => {
+    if (down) down.moved += Math.hypot(e.clientX - down.x, e.clientY - down.y);
+    if (lastMove) {
+      const dtm = Math.max(1, e.timeStamp - lastMove.t);
+      const speed = (Math.hypot(e.clientX - lastMove.x, e.clientY - lastMove.y) / dtm) * 1000;
+      if (speed > 1400 * U && (!coarse || down)) {
+        for (const p of pigeons) {
+          if (Math.hypot(p.x - e.clientX, p.y - e.clientY) < 150 * U) p.scare(e.clientX, e.clientY, rand(0, 0.1));
+        }
+        dismissHint();
+      }
+    }
+    lastMove = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+  });
+  cvs.addEventListener("pointerup", (e) => {
+    if (down && down.moved < 18) localThrow(e.clientX, e.clientY);
+    down = null;
+    if (coarse) lastMove = null;
+  });
+  cvs.addEventListener("pointercancel", () => { down = null; });
+  cvs.addEventListener("pointerleave", () => { if (!coarse) lastMove = null; });
+
+  document.getElementById("feed").addEventListener("click", () => {
+    localThrow(rand(W * 0.2, W * 0.8), rand(H * 0.35, H * 0.8));
+  });
+
+  document.getElementById("clap").addEventListener("click", () => {
+    for (const p of pigeons) p.scare(W / 2, H + 100, rand(0, 0.35));
+    dismissHint();
+  });
+
+  const soundBtn = document.getElementById("sound");
+  soundBtn.addEventListener("click", () => {
+    sound.on = !sound.on;
+    soundBtn.textContent = sound.on ? "Zvuk: zap." : "Zvuk: vyp.";
+    soundBtn.setAttribute("aria-pressed", String(sound.on));
+    if (sound.on) { const a = audio(); if (a && a.state === "suspended") a.resume(); playCoo(W / 2); }
+  });
+
+  const about = document.getElementById("about");
+  document.getElementById("info").addEventListener("click", () => about.showModal());
+  document.getElementById("close").addEventListener("click", () => about.close());
+  about.addEventListener("click", (e) => { if (e.target === about) about.close(); });
+
+  // ---------------------------------------------------------------- network
+  const onlineEl = document.getElementById("online");
+  const dotEl = document.getElementById("dot");
+  const totalEl = document.getElementById("total");
+  const fmt = new Intl.NumberFormat("cs-CZ");
+  let total = 0;
+  let ws = null, retry = 0, pingTimer = null;
+
+  function setTotal(n) {
+    total = Math.max(total, n);
+    totalEl.textContent = `Drobků celkem: ${fmt.format(total)}`;
+  }
+
+  function setOnline(n) {
+    dotEl.className = "dot on";
+    const others = n - 1;
+    const label = others <= 0 ? "Na náměstí jen ty" :
+      others === 1 ? "Na náměstí: ty a 1 další" :
+      others < 5 ? `Na náměstí: ty a ${others} další` : `Na náměstí: ty a ${fmt.format(others)} dalších`;
+    onlineEl.lastChild.textContent = label;
+  }
+
+  function send(msg) {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.addEventListener("open", () => {
+      retry = 0;
+      clearInterval(pingTimer);
+      pingTimer = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send("ping"); }, 30000);
+    });
+    ws.addEventListener("message", (e) => {
+      if (e.data === "pong") return;
+      let m;
+      try { m = JSON.parse(e.data); } catch { return; }
+      if (m.t === "hi") { setOnline(m.n); setTotal(m.total); }
+      else if (m.t === "p") setOnline(m.n);
+      else if (m.t === "s") setTotal(m.total);
+      else if (m.t === "c") {
+        setTotal(m.total);
+        if (!document.hidden) scatter(m.x * W, m.y * H, true);
+      }
+    });
+    ws.addEventListener("close", () => {
+      clearInterval(pingTimer);
+      dotEl.className = "dot";
+      onlineEl.lastChild.textContent = "Odpojeno, zkouším znovu…";
+      setTimeout(connect, Math.min(30000, 1000 * 2 ** retry++));
+    });
+  }
+
+  // ---------------------------------------------------------------- start
+  resize();
+  window.addEventListener("resize", resize);
+  for (let i = 0; i < basePop(); i++) pigeons.push(new Pigeon(false));
+  connect();
+  requestAnimationFrame(frame);
+  window.holuby = { pigeons, crumbs };
+})();
+</script>
+</body>
+</html>

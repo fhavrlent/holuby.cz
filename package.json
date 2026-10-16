@@ -1,0 +1,15 @@
+{
+  "name": "holuby",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261016.1",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.151.0"
+  }
+}

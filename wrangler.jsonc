@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "holuby",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "routes": [
+    { "pattern": "holuby.cz", "custom_domain": true },
+    { "pattern": "www.holuby.cz", "custom_domain": true }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "NAMESTI", "class_name": "Namesti" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Namesti"] }],
+  "observability": { "enabled": true }
+}
