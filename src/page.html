@@ -28,6 +28,7 @@
     text-shadow: 0 1px 12px rgba(0,0,0,.55); }
   .brand h1 { margin: 0; font: 600 clamp(26px, 4.5vw, 40px)/1 Georgia, "Times New Roman", serif; letter-spacing: -0.01em; }
   .brand p { margin: 6px 0 0; color: var(--ink-dim); font-size: 14px; }
+  .brand .sky { margin-top: 2px; font-variant-numeric: tabular-nums; }
   .hint { position: fixed; left: 50%; top: 46%; transform: translate(-50%, -50%); padding: 10px 16px;
     border-radius: 999px; background: var(--panel); backdrop-filter: blur(6px); pointer-events: none;
     font-size: 15px; white-space: nowrap; transition: opacity .8s ease; }
@@ -57,6 +58,8 @@
   .sheet footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 18px; font-size: 13px; color: var(--ink-dim); }
   .sheet a { color: var(--accent); }
   @media (max-width: 520px) {
+    .pill, button { font-size: 12.5px; padding: 6px 11px; }
+    .bar { gap: 6px; }
     .hint { white-space: normal; text-align: center; width: calc(100vw - 48px); border-radius: 14px; }
     .bar { justify-content: center; }
   }
@@ -68,6 +71,7 @@
 <div class="brand">
   <h1>holuby.cz</h1>
   <p>Náměstí, semínka a holubi.</p>
+  <p class="sky" id="weather" title="Roční období a aktuální počasí v Praze">Praha</p>
 </div>
 
 <div class="hint" id="hint">Klikni a nasyp semínka. Rychlým máchnutím myši holuby vyplašíš.</div>
@@ -99,7 +103,7 @@
     </ol>
     <p class="note">Holubům na skutečném náměstí můžete udělat radost taky. Slunečnicová semínka jim chutnají a dělají jim dobře. Jen nasypte tolik, kolik sezobou, a co zbyde, po sobě ukliďte. Tady to za vás holubi zvládnou sami, do posledního semínka.</p>
     <footer>
-      <span>Zdrojový kód na <a href="https://github.com/fhavrlent/holuby.cz" rel="noopener">GitHubu</a>.</span>
+      <span>Počasí odpovídá aktuálnímu počasí v Praze (<a href="https://open-meteo.com/" rel="noopener">Open-Meteo.com</a>). Zdrojový kód na <a href="https://github.com/fhavrlent/holuby.cz" rel="noopener">GitHubu</a>.</span>
       <button id="close" type="button">Zavřít</button>
     </footer>
   </div>
@@ -127,98 +131,435 @@
   const coarse = matchMedia("(pointer: coarse)").matches;
 
   // ---------------------------------------------------------------- ground
-  const hour = new Date().getHours();
-  const night = hour >= 19 || hour < 6;
+  // ---------------------------------------------------------------- season & weather
+  // The square is in Prague: the season comes from the date, the sky from Prague's current weather
+  // (via /api/pocasi). Query overrides for trying things out: ?sezona=jaro|leto|podzim|zima
+  // ?pocasi=jasno|zatazeno|mlha|dest|snih|bourka ?cas=den|noc
+  const params = new URLSearchParams(location.search);
+  const SEASON_PARAM = { jaro: "spring", leto: "summer", podzim: "autumn", zima: "winter" };
+  const WEATHER_PARAM = { jasno: "clear", zatazeno: "cloudy", mlha: "fog", dest: "rain", snih: "snow", bourka: "storm" };
+  const pragueNow = () => {
+    const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Prague", month: "numeric", day: "numeric", hour: "numeric", hour12: false }).formatToParts(new Date());
+    const get = (t) => Number(parts.find((x) => x.type === t).value);
+    return { month: get("month"), day: get("day"), hour: get("hour") % 24 };
+  };
+  const seasonFor = (m) => (m === 12 || m <= 2 ? "winter" : m <= 5 ? "spring" : m <= 8 ? "summer" : "autumn");
+  /** If the live weather is unavailable, pick something typical for the season — the same for everyone that day. */
+  function seasonalWeather(season, month, day) {
+    const odds = {
+      winter: [["snow", 0.35], ["cloudy", 0.35], ["clear", 0.2], ["fog", 0.1]],
+      spring: [["clear", 0.4], ["cloudy", 0.25], ["rain", 0.3], ["storm", 0.05]],
+      summer: [["clear", 0.6], ["cloudy", 0.15], ["rain", 0.1], ["storm", 0.15]],
+      autumn: [["fog", 0.25], ["cloudy", 0.3], ["rain", 0.25], ["clear", 0.2]],
+    }[season];
+    let x = mulberry(month * 100 + day)();
+    for (const [w, o] of odds) if ((x -= o) <= 0) return w;
+    return odds[0][0];
+  }
+  /** WMO weather code → our handful of moods, plus an intensity 0..1. */
+  function fromWmo(code, cloud) {
+    if (code === 45 || code === 48) return ["fog", 0.7];
+    if (code >= 95) return ["storm", 1];
+    if ((code >= 71 && code <= 77) || code === 85 || code === 86) return ["snow", code === 75 || code === 86 ? 1 : 0.55];
+    if (code >= 51 && code <= 57) return ["rain", 0.3];
+    if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) return ["rain", code === 65 || code === 82 ? 1 : 0.6];
+    if (code === 3 || cloud > 75) return ["cloudy", 0.6];
+    return ["clear", code === 2 ? 0.6 : 1];
+  }
+  const now0 = pragueNow();
+  const env = {
+    season: SEASON_PARAM[params.get("sezona")] || seasonFor(now0.month),
+    weather: WEATHER_PARAM[params.get("pocasi")] || null,
+    intensity: 0.7,
+    night: params.get("cas") ? params.get("cas") === "noc" : now0.hour >= 19 || now0.hour < 6,
+    wind: 10, temp: null, live: false,
+  };
+  if (!env.weather) env.weather = seasonalWeather(env.season, now0.month, now0.day);
+  const wet = () => env.weather === "rain" || env.weather === "storm";
+  const snowy = () => env.weather === "snow" || (env.season === "winter" && env.temp !== null && env.temp <= 0);
+  const sunny = () => env.weather === "clear" && !env.night;
+  /** Dappled shadow of a tree just off-screen; drawn every frame with a slight sway. */
+  const shade = document.createElement("canvas");
+  const shx = shade.getContext("2d");
+
+  /** Deterministic PRNG so the paving doesn't reshuffle on every resize. */
+  function mulberry(seed) {
+    return () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // The paving is laid out on a flat plane (fx from the centre line, depth d) and projected so it
+  // shrinks with distance exactly like the pigeons do: persp(y) = 0.6·e^(0.6·d/H).
+  const depthToY = (d) => (Math.exp((0.6 * d) / H) - 1) * H;
+  function project(fx, d) {
+    const y = depthToY(d);
+    return [W / 2 + fx * persp(y), y];
+  }
+
+  // Bohemian granite setts: mostly warm greys, a few bluish and rosy ones. [hue, sat, light]
+  const GRANITE = [[32, 6, 52], [28, 5, 49], [36, 8, 55], [210, 5, 51], [14, 8, 51], [30, 4, 47], [205, 4, 48], [40, 10, 56]];
+  const MORTAR = "#615950";
+
+  /** Ground-anchored street furniture, depth-sorted together with the pigeons. */
+  const props = [];
+  function placeProps() {
+    props.length = 0;
+    const narrow = W < 640;
+    props.push({ kind: "tree", x: W * (narrow ? 0.1 : 0.08), y: H * (narrow ? 0.48 : 0.5) });
+    props.push({ kind: "lamp", x: W * (narrow ? 0.84 : 0.8), y: H * 0.4 });
+    props.push({ kind: "bench", x: W * (narrow ? 0.32 : 0.2), y: H * (narrow ? 0.76 : 0.8) });
+  }
+  const propScale = (p) => persp(p.y) * U;
 
   function paintGround() {
     bg.width = W * DPR; bg.height = H * DPR;
     bgx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    bgx.fillStyle = "#3a3631";
+    const r = mulberry(1977);
+    const rr = (a, b) => a + r() * (b - a);
+    bgx.fillStyle = MORTAR;
     bgx.fillRect(0, 0, W, H);
 
-    let y = -4;
-    let row = 0;
-    while (y < H + 10) {
-      const s = persp(y);
-      const h = 26 * U * s;
-      let x = row % 2 ? -h * 0.8 : -h * 0.1;
-      while (x < W + 10) {
-        const w = h * rand(1.15, 1.9);
-        const l = rand(33, 45);
-        const hue = rand(24, 38);
-        const sat = rand(4, 10);
-        const g = 1.2 * s;
-        roundRect(bgx, x + g, y + g, w - 2 * g, h - 2 * g, h * 0.32);
-        bgx.fillStyle = `hsl(${hue} ${sat}% ${l}%)`;
+    // Fan (segmental arc) paving: rows of overlapping discs, each laid as concentric rings of setts.
+    // Every row covers the lower part of the row before it, which leaves the familiar scale pattern.
+    const R = 120 * U, st = 17 * U, gap = 1.7 * U;
+    const dMax = (H / 0.6) * Math.log(persp(H) / 0.6) + R;
+    const half = W / 2 / 0.6 + 2 * R;
+    const stone = (cx, cy, r0, r1, a0, a1) => {
+      const ri = r0 > 0 ? r0 + gap / 2 : 0, ro = r1 - gap / 2;
+      const rm = (ri + ro) / 2 || ro / 2;
+      const da = gap / 2 / Math.max(rm, 1);
+      const b0 = a0 + da, b1 = a1 - da, bm = (b0 + b1) / 2;
+      const pts = [[ro, b0], [ro, bm], [ro, b1], [ri, b1], [ri, bm], [ri, b0]]
+        .map(([rad, a]) => project(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad));
+      const [hue, sat, l] = GRANITE[(r() * GRANITE.length) | 0];
+      bgx.beginPath();
+      pts.forEach(([x, y], i) => (i ? bgx.lineTo(x, y) : bgx.moveTo(x, y)));
+      bgx.closePath();
+      bgx.fillStyle = `hsl(${hue} ${sat}% ${l + rr(-3, 3)}%)`;
+      bgx.fill();
+      bgx.strokeStyle = "rgba(30,24,18,.14)";
+      bgx.lineWidth = 0.8;
+      bgx.stroke();
+      // a soft highlight on the upper half makes each sett look domed
+      const mx = pts.reduce((a, q) => a + q[0], 0) / 6, my = pts.reduce((a, q) => a + q[1], 0) / 6;
+      bgx.beginPath();
+      pts.forEach(([x, y], i) => {
+        const hx = mx + (x - mx) * 0.55, hy = my + (y - my) * 0.45 - (y - my > 0 ? 0 : 0.6);
+        i ? bgx.lineTo(hx, hy) : bgx.moveTo(hx, hy);
+      });
+      bgx.closePath();
+      bgx.fillStyle = `hsla(${hue} 25% 92% / ${rr(0.04, 0.08)})`;
+      bgx.fill();
+    };
+    for (let row = 0, cy = -R * 0.6; cy < dMax + R; row++, cy += R) {
+      const x0 = (row % 2 ? R : 0) - Math.ceil(half / (2 * R)) * 2 * R;
+      for (let cx = x0; cx <= half; cx += 2 * R) {
+        const [px, py] = project(cx, cy);
+        const pr = R * persp(Math.max(0, py));
+        if (px < -pr * 1.3 || px > W + pr * 1.3 || py < -pr || py > H + pr) { r(); continue; }
+        bgx.fillStyle = MORTAR;
+        bgx.beginPath();
+        for (let i = 0; i <= 32; i++) {
+          const a = (i / 32) * Math.PI * 2;
+          const [x, y] = project(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+          i ? bgx.lineTo(x, y) : bgx.moveTo(x, y);
+        }
         bgx.fill();
-        bgx.fillStyle = `hsla(${hue} 20% 85% / ${rand(0.03, 0.07)})`;
-        roundRect(bgx, x + g * 2, y + g * 1.5, w - 4 * g, (h - 2 * g) * 0.35, h * 0.25);
-        bgx.fill();
-        x += w;
+        for (let ring = 0; ; ring++) {
+          const r1 = R - ring * st, r0 = Math.max(0, r1 - st);
+          if (r1 <= st * 0.45) break;
+          const n = r0 === 0 ? 3 : Math.max(4, Math.round((Math.PI * (r0 + r1)) / (st * rr(1, 1.3))));
+          const off = r() * Math.PI * 2;
+          for (let k = 0; k < n; k++) stone(cx, cy, r0, r1, off + (k / n) * Math.PI * 2, off + ((k + 1) / n) * Math.PI * 2);
+        }
       }
-      y += h;
-      row++;
     }
 
-    // Autumn leaves — it's October somewhere.
-    const leafColors = ["#c8642b", "#d98b2b", "#a8432a", "#e0b23c", "#8c5a2b"];
-    const nLeaves = Math.round((W * H) / 26000);
+    // Snow settles first, so shadows and leaves sit on top of it.
+    if (snowy()) {
+      const cover = env.weather === "snow" ? 0.55 + env.intensity * 0.4 : 0.4;
+      const n = Math.round(((W * H) / 2600) * cover);
+      for (let i = 0; i < n; i++) {
+        const x = rr(-40, W + 40), y = rr(-20, H + 20), k = persp(y) * U, rad = rr(18, 55) * k;
+        const g = bgx.createRadialGradient(x, y, 0, x, y, rad);
+        g.addColorStop(0, `rgba(246,248,252,${rr(0.6, 0.95)})`);
+        g.addColorStop(0.7, "rgba(240,244,250,.5)");
+        g.addColorStop(1, "rgba(240,244,250,0)");
+        bgx.fillStyle = g;
+        bgx.save(); bgx.translate(x, y); bgx.scale(1, 0.5); bgx.translate(-x, -y);
+        bgx.beginPath(); bgx.arc(x, y, rad, 0, Math.PI * 2); bgx.fill();
+        bgx.restore();
+      }
+    }
+
+    // Wet cobbles: darker, with a few puddles mirroring the sky.
+    if (wet()) {
+      bgx.fillStyle = "rgba(18,22,32,.3)";
+      bgx.fillRect(0, 0, W, H);
+      for (let i = 0; i < 7; i++) {
+        const x = rr(W * 0.05, W * 0.95), y = rr(H * 0.25, H * 0.95), k = persp(y) * U;
+        const rx = rr(40, 95) * k, ry = rx * rr(0.22, 0.32);
+        bgx.save();
+        bgx.translate(x, y);
+        bgx.beginPath();
+        for (let j = 0; j <= 18; j++) {
+          const a = (j / 18) * Math.PI * 2, w = 1 + 0.18 * Math.sin(a * 3 + i);
+          j ? bgx.lineTo(Math.cos(a) * rx * w, Math.sin(a) * ry * w) : bgx.moveTo(Math.cos(a) * rx * w, Math.sin(a) * ry * w);
+        }
+        bgx.closePath();
+        const g = bgx.createLinearGradient(0, -ry, 0, ry);
+        g.addColorStop(0, env.night ? "rgba(60,70,95,.85)" : "rgba(150,165,182,.8)");
+        g.addColorStop(1, env.night ? "rgba(30,36,55,.85)" : "rgba(95,108,125,.8)");
+        bgx.fillStyle = g;
+        bgx.fill();
+        bgx.strokeStyle = "rgba(220,230,240,.25)";
+        bgx.lineWidth = 1;
+        bgx.stroke();
+        bgx.restore();
+      }
+    }
+
+    // Shadows of the street furniture, cast by a low sun from the upper left. Faint without sun.
+    const shadowA = sunny() ? (env.season === "summer" ? 0.34 : 0.28) : env.night ? 0.08 : 0.12;
+    for (const p of props) {
+      const k = propScale(p);
+      bgx.save();
+      bgx.translate(p.x, p.y);
+      bgx.scale(k, k);
+      bgx.fillStyle = `rgba(25,18,10,${shadowA})`;
+      if (p.kind === "tree") {
+        bgx.beginPath();
+        bgx.moveTo(-8, 0); bgx.lineTo(110, 30); bgx.lineTo(112, 40); bgx.lineTo(-4, 9);
+        bgx.fill();
+        // round cast-iron grate with a bit of soil around the trunk
+        bgx.fillStyle = snowy() ? "#d9dde4" : "#3a2c20";
+        bgx.beginPath(); bgx.ellipse(0, 2, 38, 13, 0, 0, Math.PI * 2); bgx.fill();
+        bgx.strokeStyle = "#26292a"; bgx.lineWidth = 2.4;
+        bgx.beginPath(); bgx.ellipse(0, 2, 38, 13, 0, 0, Math.PI * 2); bgx.stroke();
+        bgx.lineWidth = 1.2;
+        bgx.beginPath(); bgx.ellipse(0, 2, 26, 9, 0, 0, Math.PI * 2); bgx.stroke();
+        for (let i = 0; i < 16; i++) {
+          const a = (i / 16) * Math.PI * 2;
+          bgx.moveTo(Math.cos(a) * 14, 2 + Math.sin(a) * 5);
+          bgx.lineTo(Math.cos(a) * 38, 2 + Math.sin(a) * 13);
+        }
+        bgx.stroke();
+      } else if (p.kind === "lamp") {
+        bgx.beginPath();
+        bgx.moveTo(-6, 0); bgx.lineTo(150, 40); bgx.lineTo(152, 46); bgx.lineTo(-2, 8);
+        bgx.fill();
+        bgx.beginPath(); bgx.ellipse(168, 47, 20, 7, 0.25, 0, Math.PI * 2); bgx.fill();
+      } else {
+        bgx.beginPath();
+        bgx.moveTo(-70, -4); bgx.lineTo(80, -4); bgx.lineTo(118, 14); bgx.lineTo(-32, 14);
+        bgx.fill();
+      }
+      bgx.restore();
+    }
+
+    // Fallen leaves (autumn), blossom petals (spring), the odd green leaf in summer, nothing on snow.
+    const litter = {
+      autumn: [30000, ["#c8642b", "#d98b2b", "#a8432a", "#e0b23c", "#8c5a2b"], 1],
+      spring: [45000, ["#f6c9d6", "#fbe3ea", "#ffffff", "#f1b3c6"], 0.45],
+      summer: [180000, ["#5f8f3a", "#4f7d31", "#7d9a3a"], 1],
+      winter: [0, [], 1],
+    }[env.season];
+    const nLeaves = litter[0] && !snowy() ? Math.round((W * H) / litter[0]) : 0;
     for (let i = 0; i < nLeaves; i++) {
-      const lx = rand(0, W), ly = rand(groundTop(), H);
-      const s = persp(ly) * U * rand(0.8, 1.3);
+      const lx = rr(0, W), ly = rr(groundTop() * 0.5, H);
+      const k = persp(ly) * U * rr(0.8, 1.3) * litter[2];
       bgx.save();
       bgx.translate(lx, ly);
-      bgx.rotate(rand(0, Math.PI * 2));
-      bgx.scale(s, s * 0.7);
-      bgx.globalAlpha = rand(0.75, 0.95);
-      bgx.fillStyle = pick(leafColors);
+      bgx.rotate(rr(0, Math.PI * 2));
+      bgx.scale(k, k * 0.7);
+      bgx.globalAlpha = rr(0.8, 0.95);
+      bgx.fillStyle = litter[1][(r() * litter[1].length) | 0];
       bgx.beginPath();
       bgx.moveTo(-9, 0);
       bgx.quadraticCurveTo(0, -7, 9, 0);
       bgx.quadraticCurveTo(0, 7, -9, 0);
       bgx.fill();
-      bgx.strokeStyle = "rgba(60,30,10,.45)";
-      bgx.lineWidth = 0.8;
-      bgx.beginPath(); bgx.moveTo(-9, 0); bgx.lineTo(11, 0); bgx.stroke();
+      if (env.season !== "spring") {
+        bgx.strokeStyle = "rgba(60,30,10,.45)";
+        bgx.lineWidth = 0.8;
+        bgx.beginPath(); bgx.moveTo(-9, 0); bgx.lineTo(11, 0); bgx.stroke();
+      }
       bgx.restore();
     }
 
-    // Light falloff towards the edges.
-    const vg = bgx.createRadialGradient(W / 2, H * 0.55, Math.min(W, H) * 0.25, W / 2, H * 0.55, Math.max(W, H) * 0.8);
+    // Light: warm sun that changes with the season, flat grey under clouds, plus a gentle vignette.
+    const SUN = { summer: ["rgba(255,205,120,.65)", "rgba(255,175,90,.3)"], spring: ["rgba(255,236,170,.5)", "rgba(220,240,190,.2)"], autumn: ["rgba(255,190,120,.55)", "rgba(255,160,90,.22)"], winter: ["rgba(210,225,255,.45)", "rgba(190,205,240,.2)"] };
+    bgx.globalCompositeOperation = "soft-light";
+    const sun = bgx.createLinearGradient(0, 0, W, H);
+    const [c0, c1] = sunny() ? SUN[env.season] : ["rgba(120,135,160,.6)", "rgba(110,125,150,.5)"];
+    sun.addColorStop(0, c0);
+    sun.addColorStop(1, c1);
+    bgx.fillStyle = sun;
+    bgx.fillRect(0, 0, W, H);
+    bgx.globalCompositeOperation = "source-over";
+    if (!sunny() && !env.night) {
+      bgx.fillStyle = env.weather === "fog" ? "rgba(200,205,212,.12)" : "rgba(60,68,82,.16)";
+      bgx.fillRect(0, 0, W, H);
+    }
+    const haze = bgx.createLinearGradient(0, 0, 0, H * 0.35);
+    haze.addColorStop(0, "rgba(40,34,28,.45)");
+    haze.addColorStop(1, "rgba(40,34,28,0)");
+    bgx.fillStyle = haze;
+    bgx.fillRect(0, 0, W, H * 0.35);
+    const vg = bgx.createRadialGradient(W / 2, H * 0.55, Math.min(W, H) * 0.35, W / 2, H * 0.55, Math.max(W, H) * 0.85);
     vg.addColorStop(0, "rgba(0,0,0,0)");
-    vg.addColorStop(1, "rgba(0,0,0,.5)");
+    vg.addColorStop(1, "rgba(20,12,6,.42)");
     bgx.fillStyle = vg;
     bgx.fillRect(0, 0, W, H);
-    const top = bgx.createLinearGradient(0, 0, 0, H * 0.3);
-    top.addColorStop(0, "rgba(20,18,16,.55)");
-    top.addColorStop(1, "rgba(20,18,16,0)");
-    bgx.fillStyle = top;
-    bgx.fillRect(0, 0, W, H * 0.3);
 
-    if (night) {
-      bgx.fillStyle = "rgba(18,26,60,.38)";
+    if (env.night) {
+      bgx.fillStyle = "rgba(14,22,58,.52)";
       bgx.fillRect(0, 0, W, H);
-      const lx = W * 0.78, ly = H * 0.42;
-      const glow = bgx.createRadialGradient(lx, ly, 0, lx, ly, Math.max(W, H) * 0.45);
-      glow.addColorStop(0, "rgba(255,196,110,.30)");
-      glow.addColorStop(1, "rgba(255,196,110,0)");
+      const lamp = props.find((p) => p.kind === "lamp");
+      const k = propScale(lamp);
+      const pool = bgx.createRadialGradient(lamp.x, lamp.y + 10 * k, 0, lamp.x, lamp.y + 10 * k, 260 * k);
+      pool.addColorStop(0, "rgba(255,190,100,.42)");
+      pool.addColorStop(1, "rgba(255,190,100,0)");
       bgx.globalCompositeOperation = "lighter";
-      bgx.fillStyle = glow;
-      bgx.fillRect(0, 0, W, H);
+      bgx.fillStyle = pool;
+      bgx.save();
+      bgx.translate(lamp.x, lamp.y + 10 * k);
+      bgx.scale(1, 0.45);
+      bgx.translate(-lamp.x, -(lamp.y + 10 * k));
+      bgx.fillRect(0, 0, W, H * 3);
+      bgx.restore();
       bgx.globalCompositeOperation = "source-over";
     }
+
+    // The tree's dappled shadow; sparse in winter, nearly gone without direct sun.
+    shade.width = W * DPR; shade.height = H * DPR;
+    shx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const blob = (x, y, rad, a) => {
+      const g = shx.createRadialGradient(x, y, 0, x, y, rad);
+      g.addColorStop(0, `rgba(20,26,12,${a})`);
+      g.addColorStop(0.6, `rgba(20,26,12,${a * 0.7})`);
+      g.addColorStop(1, "rgba(20,26,12,0)");
+      shx.fillStyle = g;
+      shx.beginPath(); shx.arc(x, y, rad, 0, Math.PI * 2); shx.fill();
+    };
+    const tree = props.find((p) => p.kind === "tree");
+    const tk = propScale(tree);
+    const dense = env.season === "winter" ? 0.25 : env.season === "spring" ? 0.8 : 1;
+    const shadeA = (sunny() ? 0.22 : env.night ? 0.06 : 0.08) * dense;
+    for (let i = 0; i < 75; i++) {
+      const a = rr(0, Math.PI * 2), d = Math.sqrt(r()) * 170 * tk;
+      blob(tree.x + 120 * tk + Math.cos(a) * d, tree.y + 30 * tk + Math.sin(a) * d * 0.55, rr(18, 46) * tk, shadeA * rr(0.7, 1.1));
+    }
+    paintCanopy(tree, tk, mulberry(42));
   }
 
-  function roundRect(c, x, y, w, h, r) {
-    r = Math.min(r, w / 2, h / 2);
-    c.beginPath();
-    c.moveTo(x + r, y);
-    c.arcTo(x + w, y, x + w, y + h, r);
-    c.arcTo(x + w, y + h, x, y + h, r);
-    c.arcTo(x, y + h, x, y, r);
-    c.arcTo(x, y, x + w, y, r);
-    c.closePath();
+  // Linden crown: painted once per resize/weather change and drawn every frame with a little sway.
+  const crown = document.createElement("canvas");
+  const crx = crown.getContext("2d");
+  const CROWN = {
+    spring: { leaves: ["#7fae4a", "#93c056", "#a8cf6a", "#6c9c3e", "#b9d97a"], dark: "#3d5a22", blossom: ["#f6c9d6", "#fbe3ea", "#ffffff", "#f1b3c6"], density: 0.85 },
+    summer: { leaves: ["#3f6b2a", "#4f7d31", "#5f8f3a", "#6f9a3e", "#355e24", "#77a345"], dark: "#1f3313", blossom: [], density: 1 },
+    autumn: { leaves: ["#7d9a3a", "#9fae3f", "#c9a83a", "#d9952e", "#c0702a", "#e2bb48", "#b5562a"], dark: "#4a3a18", blossom: [], density: 0.9 },
+    winter: { leaves: [], dark: "#000", blossom: [], density: 0 },
+  };
+  const FALLING = { autumn: ["#d9952e", "#c0702a", "#e2bb48", "#b5562a", "#c9a83a"], spring: ["#f6c9d6", "#fbe3ea", "#ffffff"], summer: ["#5f8f3a"], winter: [] };
+  const crownBox = { x: 0, y: 0, w: 0, h: 0 };
+  function paintCanopy(tree, k, r) {
+    const CR = 165 * k;
+    crownBox.w = CR * 2.3; crownBox.h = CR * 1.75;
+    crownBox.x = tree.x - crownBox.w * 0.47; crownBox.y = tree.y - 175 * k - crownBox.h * 0.62;
+    crown.width = crownBox.w * DPR; crown.height = crownBox.h * DPR;
+    crx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const cx = crownBox.w / 2, cy = crownBox.h * 0.55;
+    const pal = CROWN[env.season];
+    // trunk limb ends in crown coordinates (see drawTrunk)
+    const toCrown = (x, y) => [tree.x + x * k - crownBox.x, tree.y + y * k - crownBox.y];
+
+    // Branches: always drawn (they show through gaps), the whole picture in winter.
+    const branch = (x, y, ang, len, w, depth) => {
+      const x2 = x + Math.cos(ang) * len, y2 = y + Math.sin(ang) * len;
+      crx.strokeStyle = "#4a3a2a";
+      crx.lineWidth = w;
+      crx.lineCap = "round";
+      crx.beginPath(); crx.moveTo(x, y); crx.quadraticCurveTo((x + x2) / 2 + (r() - 0.5) * len * 0.3, (y + y2) / 2, x2, y2); crx.stroke();
+      if (snowy() && w > 1.2 && Math.cos(ang) !== 0) {
+        crx.strokeStyle = "rgba(248,250,255,.9)";
+        crx.lineWidth = w * 0.55;
+        crx.beginPath(); crx.moveTo(x, y - w * 0.4); crx.lineTo(x2, y2 - w * 0.4); crx.stroke();
+      }
+      if (depth > 0) {
+        const n = depth > 2 ? 2 : 2 + (r() < 0.4 ? 1 : 0);
+        for (let i = 0; i < n; i++) branch(x2, y2, ang + (r() - 0.5) * 1.3, len * (0.62 + r() * 0.15), w * 0.65, depth - 1);
+      }
+    };
+    const [lx, ly] = toCrown(-42, -193), [rx, ry] = toCrown(39, -194);
+    crx.save();
+    if (pal.density) {   // with leaves on, keep the twigs inside the crown
+      crx.beginPath(); crx.ellipse(cx, cy, CR * 0.95, CR * 0.58, 0, 0, Math.PI * 2); crx.clip();
+    }
+    branch(lx, ly, -2.2, 52 * k, 9 * k, 5);
+    branch(lx, ly, -1.7, 48 * k, 7 * k, 4);
+    branch(rx, ry, -0.95, 52 * k, 9 * k, 5);
+    branch(rx, ry, -1.45, 46 * k, 7 * k, 4);
+    branch((lx + rx) / 2, (ly + ry) / 2 + 20 * k, -1.57, 60 * k, 8 * k, 5);
+    crx.restore();
+    if (!pal.density) return;
+
+    // Leaves in clumps: a dark layer for the shaded underside, then lit clumps biased to the upper left.
+    const clump = (x, y, rad, colors) => {
+      for (let j = 0; j < 6; j++) {
+        const a = r() * 6.3, d = r() * rad * 0.7;
+        crx.save();
+        crx.translate(x + Math.cos(a) * d, y + Math.sin(a) * d * 0.8);
+        crx.rotate(r() * 6.3);
+        crx.fillStyle = colors[(r() * colors.length) | 0];
+        crx.beginPath(); crx.ellipse(0, 0, rad * 0.5, rad * 0.32, 0, 0, Math.PI * 2); crx.fill();
+        crx.restore();
+      }
+    };
+    const inCrown = () => {
+      const a = r() * Math.PI * 2, d = Math.sqrt(r()) * CR * 0.95;
+      return [cx + Math.cos(a) * d * 1.05, cy + Math.sin(a) * d * 0.62];
+    };
+    const n = Math.round(260 * pal.density);
+    for (let i = 0; i < n; i++) {
+      const [x, y] = inCrown();
+      clump(x, y + 8 * k, rrK(r, 16, 26) * k, [pal.dark, pal.dark, pal.leaves[0]]);
+    }
+    for (let i = 0; i < n; i++) {
+      const [x, y] = inCrown();
+      const lit = (cx - x) / CR + (cy - y) / CR;   // upper-left is towards the sun
+      if (lit < -0.6 && r() < 0.7) continue;
+      clump(x, y, rrK(r, 12, 22) * k, pal.leaves);
+    }
+    for (let i = 0; i < n * 0.45; i++) {
+      const [x, y] = inCrown();
+      if ((cx - x) / CR + (cy - y) / CR < 0.1) continue;
+      crx.globalAlpha = 0.55;
+      clump(x, y - 4 * k, rrK(r, 8, 14) * k, ["#ffffff", ...pal.leaves.slice(-2)]);
+      crx.globalAlpha = 1;
+    }
+    for (let i = 0; i < pal.blossom.length * 30; i++) {
+      const [x, y] = inCrown();
+      clump(x, y, rrK(r, 6, 11) * k, pal.blossom);
+    }
+    if (snowy()) {
+      crx.globalAlpha = 0.85;
+      for (let i = 0; i < 80; i++) { const [x, y] = inCrown(); if (y < cy) clump(x, y - 6 * k, rrK(r, 8, 14) * k, ["#f4f7fb", "#ffffff"]); }
+      crx.globalAlpha = 1;
+    }
+    if (env.night) {
+      crx.globalCompositeOperation = "source-atop";
+      crx.fillStyle = "rgba(14,22,58,.5)";
+      crx.fillRect(0, 0, crownBox.w, crownBox.h);
+      crx.globalCompositeOperation = "source-over";
+    }
   }
+  const rrK = (r, a, b) => a + r() * (b - a);
 
   function resize() {
     const oldW = W, oldH = H;
@@ -227,6 +568,7 @@
     U = clamp(Math.min(W, H) / 720, 0.7, 1.35);
     cvs.width = W * DPR; cvs.height = H * DPR;
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    placeProps();
     paintGround();
     if (oldW && oldH && W && H) {
       for (const p of pigeons) { p.x *= W / oldW; p.y *= H / oldH; }
@@ -301,6 +643,29 @@
       s.connect(f).connect(g).connect(out);
       s.start(t0, rand(0, 0.4), 0.08);
     }
+  }
+
+  let rumbleBuf = null;
+  /** Distant thunder: low-passed noise with a slow swell and a long tail. */
+  function playThunder() {
+    const a = audio(); if (!a) return;
+    if (!rumbleBuf) {
+      rumbleBuf = a.createBuffer(1, a.sampleRate * 3.5, a.sampleRate);
+      const d = rumbleBuf.getChannelData(0);
+      let last = 0;
+      for (let i = 0; i < d.length; i++) { last = last * 0.97 + (Math.random() * 2 - 1) * 0.03; d[i] = last * 6; }
+    }
+    const t = a.currentTime;
+    const src = a.createBufferSource();
+    src.buffer = rumbleBuf;
+    const f = a.createBiquadFilter();
+    f.type = "lowpass"; f.frequency.value = rand(140, 260);
+    const g = a.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.5, t + 0.25);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 3.4);
+    src.connect(f).connect(g).connect(a.destination);
+    src.start(t);
   }
 
   // ---------------------------------------------------------------- pigeons
@@ -821,6 +1186,7 @@
 
   /** Keep pigeons from standing inside each other. */
   function separate() {
+    const obs = obstacles();
     for (let i = 0; i < pigeons.length; i++) {
       const a = pigeons[i];
       if (a.z > 0 || a.state === "away") continue;
@@ -836,8 +1202,247 @@
           b.x += (dx / d) * push; b.y += (dy / d) * push * 0.6;
         }
       }
+      for (const o of obs) {
+        const dx = a.x - o.x, dy = (a.y - o.y) * 2.2;
+        const d = Math.hypot(dx, dy);
+        if (d < o.r && d > 0) { a.x += (dx / d) * (o.r - d); a.y += ((dy / d) * (o.r - d)) / 2.2; }
+      }
       a.x = clamp(a.x, 6, W - 6);
       a.y = clamp(a.y, groundTop(), H - 6);
+    }
+  }
+
+  // ---------------------------------------------------------------- street furniture
+  const IRON = "#252a28", IRON_HI = "#4b5551";
+
+  function drawProp(c, p, t) {
+    const k = propScale(p);
+    c.save();
+    c.translate(p.x, p.y);
+    c.scale(k, k);
+    if (p.kind === "lamp") drawLamp(c);
+    else if (p.kind === "bench") drawBench(c);
+    else drawTrunk(c, t);
+    c.restore();
+  }
+
+  /** Prague-style cast-iron lamp: fluted base, slim post, four-sided lantern. */
+  function drawLamp(c) {
+    c.fillStyle = IRON;
+    c.beginPath();
+    c.moveTo(-15, 0); c.lineTo(15, 0); c.lineTo(11, -12); c.lineTo(8, -40); c.lineTo(-8, -40); c.lineTo(-11, -12);
+    c.closePath(); c.fill();
+    c.fillRect(-11, -48, 22, 8);
+    c.fillRect(-4, -230, 8, 184);
+    c.fillRect(-7, -150, 14, 6);
+    c.fillRect(-8, -232, 16, 5);
+    c.fillStyle = IRON_HI;
+    c.fillRect(-6, -38, 3, 36);
+    c.fillRect(-2.5, -228, 2, 180);
+    // lantern
+    const glass = env.night ? "#ffe6a8" : "rgba(214,226,214,.85)";
+    c.fillStyle = IRON;
+    c.beginPath(); c.moveTo(-9, -236); c.lineTo(9, -236); c.lineTo(13, -244); c.lineTo(-13, -244); c.fill();
+    c.fillStyle = glass;
+    c.beginPath(); c.moveTo(-12, -246); c.lineTo(12, -246); c.lineTo(16, -276); c.lineTo(-16, -276); c.closePath(); c.fill();
+    c.strokeStyle = IRON; c.lineWidth = 2;
+    c.beginPath(); c.moveTo(0, -246); c.lineTo(0, -276); c.stroke();
+    c.lineWidth = 2.5;
+    c.beginPath(); c.moveTo(-12, -246); c.lineTo(12, -246); c.lineTo(16, -276); c.lineTo(-16, -276); c.closePath(); c.stroke();
+    c.fillStyle = IRON;
+    c.beginPath(); c.moveTo(-19, -277); c.lineTo(19, -277); c.lineTo(0, -294); c.closePath(); c.fill();
+    c.beginPath(); c.arc(0, -297, 3.5, 0, Math.PI * 2); c.fill();
+    if (env.night) {
+      c.globalCompositeOperation = "lighter";
+      const g = c.createRadialGradient(0, -261, 0, 0, -261, 90);
+      g.addColorStop(0, "rgba(255,200,110,.55)");
+      g.addColorStop(1, "rgba(255,200,110,0)");
+      c.fillStyle = g;
+      c.beginPath(); c.arc(0, -261, 90, 0, Math.PI * 2); c.fill();
+      c.globalCompositeOperation = "source-over";
+    }
+  }
+
+  /** Classic park bench: wooden slats on cast-iron legs, seen slightly from above. */
+  function drawBench(c) {
+    const WOOD = ["#a26f40", "#8e5f35", "#b17b49"];
+    c.fillStyle = IRON;
+    // back legs and backrest posts
+    c.fillRect(-66, -40, 6, 30); c.fillRect(70, -40, 6, 30);
+    c.fillRect(-64, -86, 5, 48); c.fillRect(71, -86, 5, 48);
+    // backrest slats
+    for (let i = 0; i < 3; i++) {
+      c.fillStyle = WOOD[i % 3];
+      c.beginPath();
+      const y = -84 + i * 14;
+      c.moveTo(-74, y); c.lineTo(84, y); c.lineTo(84, y + 10); c.lineTo(-74, y + 10);
+      c.fill();
+    }
+    // seat slats, front edge lower and nearer
+    for (let i = 0; i < 4; i++) {
+      c.fillStyle = WOOD[(i + 1) % 3];
+      const y0 = -40 + i * 4, sk = 10 - i * 3;
+      c.beginPath();
+      c.moveTo(-76 + sk, y0); c.lineTo(84 + sk, y0); c.lineTo(82 + sk - 3, y0 + 3.4); c.lineTo(-78 + sk - 3, y0 + 3.4);
+      c.fill();
+    }
+    c.fillStyle = "rgba(0,0,0,.25)";
+    c.fillRect(-80, -24, 160, 3);
+    // front legs with a little curl
+    c.fillStyle = IRON;
+    c.fillRect(-74, -24, 7, 24); c.fillRect(66, -24, 7, 24);
+    c.fillRect(-77, -3, 13, 3); c.fillRect(63, -3, 13, 3);
+    c.strokeStyle = IRON; c.lineWidth = 3;
+    c.beginPath(); c.moveTo(-76, -40); c.quadraticCurveTo(-86, -52, -74, -60); c.stroke();
+    c.beginPath(); c.moveTo(84, -40); c.quadraticCurveTo(94, -52, 82, -60); c.stroke();
+  }
+
+  /** Linden trunk splitting into two limbs that disappear into the crown. */
+  function drawTrunk(c) {
+    const g = c.createLinearGradient(-14, 0, 14, 0);
+    g.addColorStop(0, "#6b5440"); g.addColorStop(0.5, "#54412f"); g.addColorStop(1, "#3a2c20");
+    c.fillStyle = g;
+    c.beginPath();
+    c.moveTo(-15, 0); c.quadraticCurveTo(-10, -60, -9, -120);
+    c.quadraticCurveTo(-30, -160, -48, -190); c.lineTo(-36, -196);
+    c.quadraticCurveTo(-14, -168, -2, -150);
+    c.quadraticCurveTo(12, -175, 34, -198); c.lineTo(44, -190);
+    c.quadraticCurveTo(18, -160, 9, -120);
+    c.quadraticCurveTo(10, -60, 15, 0);
+    c.closePath(); c.fill();
+    c.strokeStyle = "rgba(30,20,12,.35)"; c.lineWidth = 1.4;
+    for (const x of [-6, 1, 7]) {
+      c.beginPath(); c.moveTo(x, -4); c.quadraticCurveTo(x - 2, -60, x * 0.6, -115); c.stroke();
+    }
+  }
+
+  /** Obstacles pigeons walk around (ground footprint of trunk and lamp post). */
+  function obstacles() {
+    return props.filter((p) => p.kind !== "bench").map((p) => ({ x: p.x, y: p.y, r: (p.kind === "tree" ? 20 : 14) * propScale(p) }));
+  }
+
+  class Leaf {
+    constructor() {
+      const tree = props.find((p) => p.kind === "tree");
+      const k = propScale(tree);
+      this.x = crownBox.x + rand(0.2, 0.9) * crownBox.w;
+      const sy = crownBox.y + rand(0.45, 0.85) * crownBox.h;
+      this.y = clamp(tree.y + rand(-60, 140) * k, groundTop(), H - 10);
+      this.z = Math.max(0, this.y - sy);
+      this.rot = rand(0, 6.3); this.t = 0; this.sway = rand(0, 6);
+      this.c = pick(FALLING[env.season]);
+      this.k = rand(0.8, 1.2) * (env.season === "spring" ? 0.5 : 1);
+    }
+    update(dt) {
+      this.t += dt;
+      if (this.z > 0) {
+        this.z = Math.max(0, this.z - 34 * U * dt);
+        this.x += (Math.sin(this.t * 1.8 + this.sway) * 40 + 14) * U * dt;
+        this.rot += Math.cos(this.t * 1.8 + this.sway) * 2 * dt;
+      }
+      return this.t < 40;
+    }
+    draw(c) {
+      const k = persp(this.y) * U * this.k;
+      c.save();
+      c.globalAlpha = clamp((40 - this.t) / 4, 0, 0.95);
+      c.translate(this.x, this.y - this.z);
+      c.rotate(this.rot);
+      c.scale(k, k * (this.z > 0 ? Math.abs(Math.sin(this.t * 3 + this.sway)) * 0.6 + 0.4 : 0.7));
+      c.fillStyle = this.c;
+      c.beginPath(); c.moveTo(-8, 0); c.quadraticCurveTo(0, -7, 8, 0); c.quadraticCurveTo(0, 7, -8, 0); c.fill();
+      c.restore();
+    }
+  }
+  const leaves = [];
+  let leafTimer = 2;
+  /** Seconds between falling leaves; rain and wind shake more loose. */
+  const leafEvery = () => ({ autumn: [1.5, 5], spring: [1, 3.5], summer: [12, 30], winter: [1e9, 1e9] })[env.season].map((t) => t / (1 + env.wind / 25));
+
+  // ---------------------------------------------------------------- weather effects
+  const drops = [];      // rain streaks and snowflakes, in screen space
+  const splashes = [];
+  let flash = 0, nextBolt = rand(4, 10);
+  function weatherTarget() {
+    const area = (W * H) / 1e6;
+    if (wet()) return Math.round(area * (env.weather === "storm" ? 420 : 140 + 220 * env.intensity));
+    if (env.weather === "snow") return Math.round(area * (90 + 160 * env.intensity));
+    return 0;
+  }
+  function spawnDrop(anywhere) {
+    const gy = rand(groundTop(), H);
+    const snow = env.weather === "snow";
+    return {
+      x: rand(-W * 0.1, W * 1.1), y: anywhere ? rand(-H * 0.2, gy) : rand(-H * 0.25, -10), gy, snow,
+      v: snow ? rand(40, 85) * U : rand(850, 1150) * U, r: rand(1.2, 3) * persp(gy) * U, ph: rand(0, 6.3),
+    };
+  }
+  function updateWeather(dt, now) {
+    const want = weatherTarget();
+    while (drops.length < want) drops.push(spawnDrop(drops.length < want * 0.9));
+    if (drops.length > want) drops.length = want;
+    const slant = (env.wind / 40) * (env.weather === "storm" ? 1.6 : 1);
+    for (let i = 0; i < drops.length; i++) {
+      const d = drops[i];
+      d.y += d.v * dt;
+      d.x += d.snow ? (Math.sin(now / 900 + d.ph) * 22 + slant * 40) * U * dt : slant * d.v * 0.35 * dt;
+      if (d.y >= d.gy) {
+        if (!d.snow && splashes.length < 160) splashes.push({ x: d.x, y: d.gy, t: 0 });
+        drops[i] = spawnDrop(false);
+      }
+    }
+    for (let i = splashes.length - 1; i >= 0; i--) if ((splashes[i].t += dt) > 0.28) splashes.splice(i, 1);
+    if (env.weather === "storm") {
+      nextBolt -= dt;
+      if (nextBolt <= 0) { flash = 1; nextBolt = rand(6, 16); setTimeout(() => playThunder(), rand(400, 1600)); }
+    }
+    flash = Math.max(0, flash - dt * 2.4);
+  }
+  function drawWeather(c, now) {
+    if (env.weather === "fog") {
+      const g = c.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, "rgba(214,218,224,.66)");
+      g.addColorStop(0.45, "rgba(214,218,224,.32)");
+      g.addColorStop(1, "rgba(214,218,224,.12)");
+      c.fillStyle = g;
+      c.fillRect(0, 0, W, H);
+      for (let i = 0; i < 4; i++) {   // slow drifting banks
+        const x = ((now / (60 + i * 25)) % (W * 1.6)) - W * 0.3, y = H * (0.25 + i * 0.17);
+        const rg = c.createRadialGradient(x, y, 0, x, y, W * 0.35);
+        rg.addColorStop(0, "rgba(225,228,232,.28)");
+        rg.addColorStop(1, "rgba(225,228,232,0)");
+        c.fillStyle = rg;
+        c.save(); c.translate(x, y); c.scale(1, 0.3); c.translate(-x, -y);
+        c.fillRect(x - W * 0.35, y - W * 0.35, W * 0.7, W * 0.7);
+        c.restore();
+      }
+    }
+    if (drops.length) {
+      if (wet()) {
+        const slant = (env.wind / 40) * (env.weather === "storm" ? 1.6 : 1);
+        c.strokeStyle = env.night ? "rgba(170,185,215,.38)" : "rgba(210,222,238,.5)";
+        c.lineWidth = 1.1;
+        c.beginPath();
+        for (const d of drops) {
+          const len = 16 * persp(d.gy) * U;
+          c.moveTo(d.x, d.y); c.lineTo(d.x - slant * len * 0.35, d.y - len);
+        }
+        c.stroke();
+        c.strokeStyle = "rgba(220,230,245,.45)";
+        for (const sp of splashes) {
+          const k = sp.t / 0.28, sc = persp(sp.y) * U;
+          c.globalAlpha = 1 - k;
+          c.beginPath(); c.ellipse(sp.x, sp.y, (2 + k * 7) * sc, (1 + k * 2.4) * sc, 0, 0, Math.PI * 2); c.stroke();
+        }
+        c.globalAlpha = 1;
+      } else {
+        c.fillStyle = "rgba(250,252,255,.92)";
+        for (const d of drops) { c.beginPath(); c.arc(d.x, d.y, d.r, 0, Math.PI * 2); c.fill(); }
+      }
+    }
+    if (flash > 0) {
+      c.fillStyle = `rgba(235,240,255,${flash * 0.55})`;
+      c.fillRect(0, 0, W, H);
     }
   }
 
@@ -848,7 +1453,7 @@
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     // A page opened hidden or prerendered can have a 0×0 viewport; wait until it has a size.
-    if (!W || !H || !bg.width || !bg.height) { requestAnimationFrame(frame); return; }
+    if (!W || !H || !bg.width || !bg.height || !crown.width) { requestAnimationFrame(frame); return; }
     if (!seeded) {
       seeded = true;
       for (let i = 0; i < basePop(); i++) pigeons.push(new Pigeon(false));
@@ -859,8 +1464,15 @@
     separate();
     managePopulation(dt);
     for (let i = feathers.length - 1; i >= 0; i--) if (!feathers[i].update(dt)) feathers.splice(i, 1);
+    leafTimer -= dt;
+    if (leafTimer <= 0 && leaves.length < 60) { if (FALLING[env.season].length) leaves.push(new Leaf()); leafTimer = rand(...leafEvery()); }
+    updateWeather(dt, now);
+    for (let i = leaves.length - 1; i >= 0; i--) if (!leaves[i].update(dt)) leaves.splice(i, 1);
 
     ctx.drawImage(bg, 0, 0, W, H);
+    const sway = (Math.sin(now / 2300) * 3 + Math.sin(now / 410) * env.wind / 12) * U;
+    ctx.drawImage(shade, sway, sway * 0.4, W, H);
+    for (const l of leaves) if (l.z <= 0) l.draw(ctx);
 
     for (let i = rings.length - 1; i >= 0; i--) {
       const r = rings[i];
@@ -877,10 +1489,13 @@
     for (const c of crumbs) if (c.landed) drawCrumb(ctx, c);
     for (const f of feathers) if (f.z <= 0) f.draw(ctx);
 
-    const ground = pigeons.filter((p) => p.z <= 0.5).sort((a, b) => a.y - b.y);
-    for (const p of ground) p.draw(ctx);
+    const depth = [...pigeons.filter((p) => p.z <= 0.5), ...props].sort((a, b) => a.y - b.y);
+    for (const d of depth) d.kind ? drawProp(ctx, d, now) : d.draw(ctx);
     const air = pigeons.filter((p) => p.z > 0.5).sort((a, b) => a.y - b.y);
     for (const p of air) p.draw(ctx);
+    for (const l of leaves) if (l.z > 0) l.draw(ctx);
+    ctx.drawImage(crown, crownBox.x + sway, crownBox.y + sway * 0.3, crownBox.w, crownBox.h);
+    drawWeather(ctx, now);
 
     for (const c of crumbs) if (!c.landed) drawCrumb(ctx, c);
     for (const f of feathers) if (f.z > 0) f.draw(ctx);
@@ -1027,10 +1642,38 @@
     });
   }
 
+  // ---------------------------------------------------------------- live weather
+  const weatherEl = document.getElementById("weather");
+  const SEASON_CS = { spring: "jaro", summer: "léto", autumn: "podzim", winter: "zima" };
+  const WEATHER_CS = { clear: "jasno", cloudy: "zataženo", fog: "mlha", rain: "déšť", snow: "sněží", storm: "bouřka" };
+  function showWeather() {
+    const sky = env.weather === "clear" && env.night ? "jasná noc" : WEATHER_CS[env.weather];
+    const temp = env.temp === null ? "" : ` · ${Math.round(env.temp)} °C`;
+    weatherEl.textContent = `Praha · ${SEASON_CS[env.season]}${temp} · ${sky}`;
+  }
+  async function loadWeather() {
+    try {
+      const res = await fetch("/api/pocasi");
+      if (!res.ok) throw new Error(String(res.status));
+      const w = await res.json();
+      const before = JSON.stringify([env.weather, env.night, snowy()]);
+      if (!params.get("pocasi")) [env.weather, env.intensity] = fromWmo(w.code, w.cloud);
+      if (!params.get("cas")) env.night = !w.day;
+      env.temp = w.temp; env.wind = w.wind; env.live = true;
+      if (JSON.stringify([env.weather, env.night, snowy()]) !== before && W && H) paintGround();
+    } catch {
+      // keep the seasonal guess
+    }
+    showWeather();
+  }
+
   // ---------------------------------------------------------------- start
   resize();
   window.addEventListener("resize", resize);
   connect();
+  showWeather();
+  loadWeather();
+  setInterval(loadWeather, 15 * 60 * 1000);
   requestAnimationFrame(frame);
   window.holuby = { pigeons, crumbs };
 })();

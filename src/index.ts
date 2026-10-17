@@ -16,7 +16,7 @@ const SECURITY_HEADERS: Record<string, string> = {
 };
 
 export default {
-  async fetch(req, env): Promise<Response> {
+  async fetch(req, env, ctx): Promise<Response> {
     const url = new URL(req.url);
 
     if (url.hostname.startsWith("www.")) {
@@ -32,11 +32,13 @@ export default {
         const stub = env.NAMESTI.get(env.NAMESTI.idFromName("namesti"));
         return stub.fetch(req);
       }
+      case "/api/pocasi":
+        return pragueWeather(ctx);
       case "/":
         return new Response(page, {
           headers: {
             "content-type": "text/html; charset=utf-8",
-            "cache-control": "public, max-age=300",
+            "cache-control": "public, max-age=60",
             ...SECURITY_HEADERS,
           },
         });
@@ -55,6 +57,31 @@ export default {
     }
   },
 } satisfies ExportedHandler<Env>;
+
+const WEATHER_URL =
+  "https://api.open-meteo.com/v1/forecast?latitude=50.0875&longitude=14.4214" +
+  "&current=temperature_2m,weather_code,cloud_cover,wind_speed_10m,is_day&timezone=Europe%2FPrague";
+
+/** Current weather on Old Town Square from Open-Meteo, cached at the edge for 10 minutes. */
+async function pragueWeather(ctx: ExecutionContext): Promise<Response> {
+  const key = new Request("https://holuby.cz/api/pocasi");
+  const cache = caches.default;
+  const hit = await cache.match(key);
+  if (hit) return hit;
+  const upstream = await fetch(WEATHER_URL, { headers: { "user-agent": "holuby.cz" } });
+  if (!upstream.ok) {
+    return Response.json({ error: "počasí není k dispozici" }, { status: 502, headers: { "cache-control": "no-store" } });
+  }
+  const { current: c } = await upstream.json<{
+    current: { temperature_2m: number; weather_code: number; cloud_cover: number; wind_speed_10m: number; is_day: number };
+  }>();
+  const res = Response.json(
+    { code: c.weather_code, temp: c.temperature_2m, cloud: c.cloud_cover, wind: c.wind_speed_10m, day: c.is_day === 1 },
+    { headers: { "cache-control": "public, max-age=600" } },
+  );
+  ctx.waitUntil(cache.put(key, res.clone()));
+  return res;
+}
 
 /** Each socket gets a small token bucket so nobody can flood the square with crumbs. */
 interface Attachment {
