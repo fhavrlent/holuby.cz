@@ -67,7 +67,12 @@ async function pragueWeather(ctx: ExecutionContext): Promise<Response> {
   const key = new Request("https://holuby.cz/api/pocasi");
   const cache = caches.default;
   const hit = await cache.match(key);
-  if (hit) return hit;
+  if (hit) {
+    // Responses read back from the edge cache get the zone's browser TTL (4 h); keep ours.
+    const res = new Response(hit.body, hit);
+    res.headers.set("cache-control", "public, max-age=600");
+    return res;
+  }
   const upstream = await fetch(WEATHER_URL, { headers: { "user-agent": "holuby.cz" } });
   if (!upstream.ok) {
     return Response.json({ error: "počasí není k dispozici" }, { status: 502, headers: { "cache-control": "no-store" } });
